@@ -3654,7 +3654,7 @@ def _relance_inactifs():
                     "Tu rates ces opportunités !\n\n"
                     "\U0001f916 Reviens voir tes signaux :\n"
                     "\U0001f449 @leaderodg_bot",
-                    kb=kb_reply())
+                    kb=kb_main(is_pro(uid)))
                 time.sleep(0.1)
             except: pass
         log("INFO", clr("Relance envoyée à {} inactifs.".format(len(inactifs[:20])), "dim"))
@@ -5501,13 +5501,9 @@ def tg_updates(offset):
 #  CLAVIERS COMPLETS
 # ══════════════════════════════════════════════════════
 def kb_reply():
-    return {"keyboard": [
-        [{"text":"📡 Mes Signaux"},   {"text":"📊 Mon Compte"}],
-        [{"text":"💰 Devenir PRO"},   {"text":"🤝 Parrainage"}],
-        [{"text":"💸 Mes Gains"},     {"text":"📖 Guide ICT"}],
-        [{"text":"📈 Rapports"},      {"text":"🏦 Broker Exness"}],
-    ], "resize_keyboard":True, "persistent":True,
-       "input_field_placeholder":"Choisis une option..."}
+    """Supprime l'ancien clavier physique (rétrocompatibilité).
+    Utilise kb_main() à la place partout dans le code."""
+    return {"remove_keyboard": True}
 
 def kb_pro_plans():
     return {"inline_keyboard":[
@@ -5546,7 +5542,7 @@ def send_welcome(uid, uname, ref_by=0):
         "🎁 Essai PRO {} jours GRATUIT !\n"
         "💠 PRO = max {}/j  ·  🤝 {} filleuls = {} mois PRO\n\n"
         "📖 /guide ou choisis ci-dessous ↓".format(TRIAL_DAYS,PRO_LIMIT,REF_TARGET,REF_MONTHS),
-        kb=kb_reply())    # ← clavier physique persistant
+        kb=kb_main(p))    # ← inline keyboard (plus d'erreurs d'affichage)
 
 def send_start(uid, uname, ref_by=0):
     """Alias for send_welcome."""
@@ -6308,35 +6304,30 @@ def dispatch(uid, uname, txt):
     db_run("UPDATE users SET last_seen=? WHERE user_id=?",
            (datetime.now().isoformat(), uid))
 
-    # ── 1. BOUTONS DU CLAVIER PHYSIQUE (texte exact) ─────────────
-    if t == "📡 Mes Signaux":
+    # ── Migration : supprimer l'ancien clavier physique si présent ───
+    # Les anciens boutons texte sont capturés ici et redirigés vers
+    # les fonctions inline — plus jamais de doublons ou d'erreurs emoji.
+    _t_lower = t.lower()
+
+    # ── 1. BOUTONS DU CLAVIER PHYSIQUE (texte — toutes variantes) ────
+    if "signaux" in _t_lower or t in ("📡 Mes Signaux", "📩 Mes Signaux", "🛰 Mes Signaux"):
         threading.Thread(target=send_signals_info, args=(uid,), daemon=True).start(); return
-    if t == "📊 Mon Compte":
+    if "mon compte" in _t_lower or "tableau de bord" in _t_lower or t == "📊 Mon Compte":
         forced = _test_mode if uid == ADMIN_ID and _test_mode else None
         threading.Thread(target=send_account, args=(uid, uname, forced), daemon=True).start(); return
-    if t == "💰 Devenir PRO":
+    if ("devenir pro" in _t_lower or "paiement usdt" in _t_lower
+            or t in ("💰 Devenir PRO", "💎 Devenir PRO", "💠 Devenir PRO")):
         threading.Thread(target=send_pro_page, args=(uid,), daemon=True).start(); return
-    if t == "🤝 Parrainage":
+    if "parrainage" in _t_lower or "affilié" in _t_lower or t == "🤝 Parrainage":
         threading.Thread(target=send_affilie, args=(uid, uname), daemon=True).start(); return
-    if t == "💸 Mes Gains":
+    if "mes gains" in _t_lower or t in ("💸 Mes Gains", "💰 Mes Gains", "📈 Mes Gains"):
         threading.Thread(target=send_mes_gains, args=(uid,), daemon=True).start(); return
-    if t in ("📖 Guide ICT", "📖 Guide AlphaBot"):
+    if "guide" in _t_lower or t in ("📖 Guide ICT", "📖 Guide AlphaBot"):
         threading.Thread(target=send_guide, args=(uid,), daemon=True).start(); return
-    if t == "📈 Rapports":
+    if t == "📈 Rapports" or t.lower() == "rapports":
         threading.Thread(target=send_rapports, args=(uid,), daemon=True).start(); return
-    if t == "🏦 Broker Exness":
+    if "broker" in _t_lower or "exness" in _t_lower or t == "🏦 Broker Exness":
         threading.Thread(target=send_broker, args=(uid,), daemon=True).start(); return
-    # Anciens boutons (rétrocompatibilité)
-    if t in ("📩 Mes Signaux", "🛰 Mes Signaux"):
-        threading.Thread(target=send_signals_info, args=(uid,), daemon=True).start(); return
-    if t in ("💎 Devenir PRO", "💠 Devenir PRO", "💰 Paiement USDT"):
-        threading.Thread(target=send_pro_page, args=(uid,), daemon=True).start(); return
-    if t in ("📊 Mon Tableau de Bord", "📊 Mon compte"):
-        threading.Thread(target=send_account, args=(uid, uname), daemon=True).start(); return
-    if t in ("💰 Mes Gains", "📈 Mes Gains"):
-        threading.Thread(target=send_mes_gains, args=(uid,), daemon=True).start(); return
-    if t in ("🤝 Parrainage", "🤝 Devenir Affilié"):
-        threading.Thread(target=send_affilie, args=(uid, uname), daemon=True).start(); return
 
     # ── 2. BROADCAST ADMIN (texte libre en attente) ──────────────
     if uid == ADMIN_ID and t and not t.startswith("/"):
@@ -6395,7 +6386,7 @@ def dispatch(uid, uname, txt):
                              daemon=True).start(); return
         if cmd == "annuler":
             _bcast_pending.pop(uid, None)
-            tg_send(uid, "❌ Broadcast annulé.", kb=kb_reply()); return
+            tg_send(uid, "❌ Broadcast annulé.", kb=kb_main(True)); return
         if cmd == "debug":
             if not _last_results: tg_send(uid, "Aucun scan encore."); return
             lines = ["🔍 <b>DEBUG DERNIER SCAN</b>", ""]
@@ -7271,7 +7262,7 @@ def startup():
                     AI_REG.get("regime","Init"),
                     ch["balance"], ch["start_bal"]*100,
                     FREE_LIMIT, PRO_LIMIT),
-                kb=kb_reply())   # ← envoie le clavier au démarrage
+                kb=kb_main(True))   # ← inline keyboard admin
         except Exception as e:
             log("WARN", "notify startup: {}".format(e))
     threading.Thread(target=_notify, daemon=True).start()
@@ -7392,7 +7383,7 @@ def main():
                     sl_l, sm_real,
                     AI_REG.get("regime", "Init"),
                     ch["balance"], FREE_LIMIT, PRO_LIMIT),
-                kb=kb_reply())
+                kb=kb_main(True))
         threading.Thread(target=_init_bg, daemon=True).start()
         state = {"ls": 0, "la": 0, "lc": 0}
         def _loop():
