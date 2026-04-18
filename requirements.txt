@@ -1,16 +1,6 @@
-anthropic
-google-generativeai
-psycopg2-binary
-flask
-requestsrequests
-flask
-pandas
-numpy
-python-binance
 anthropic>=0.40.0
 google-generativeai>=0.8.0
 psycopg2-binary>=2.9.9
 flask>=3.0.0
 matplotlib>=3.9.0
 numpy>=1.26.0
-requests>=2.31.0
