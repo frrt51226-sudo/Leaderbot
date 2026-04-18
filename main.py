@@ -38,7 +38,7 @@ except ImportError:
 
 # ── Google Gemini SDK (Validateur alternatif) ────────────────────────
 try:
-    import google.generativeai as _genai_sdk
+  import google.genai as _genai_sdk
     _GEMINI_OK = True
 except ImportError:
     _GEMINI_OK = False
