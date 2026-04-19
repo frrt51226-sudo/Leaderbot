@@ -2502,7 +2502,7 @@ def fmt_scan(results, news, scan_t, sl_l, sm, nb):
     - Résumé des rejets par cause (pour debug rapide)
     - Challenge IA inline
     """
-    st  = daily_stats()
+    st  = db_daily_stats()
     ch  = chal_get()
     reg = AI_REG
     sn, _, sess_label, wknd = get_session()
@@ -3041,7 +3041,7 @@ def _scan_inner():
     # Rapport hebdo (DM uniquement, pas dans les groupes)
     wk = "{}-W{}".format(now.year, now.isocalendar()[1])
     if wd == WEEKLY_DAY and int(hs) == WEEKLY_HOUR and _last_w != wk and not rep_sent(wk, "weekly_rep", "week_start"):
-        ws = weekly_stats()
+        ws = db_weekly_stats()
         if ws["n"] > 0:
             wmsg = "🏆 <b>RAPPORT HEBDO AlphaBot PRO</b>\n"+"═"*22+"\n\n📅 Semaine du {}\n\n💵 Lot 0.01: +${}\n💰 Lot 1.00: +${}\n\n📡 {} signaux  ·  {} wins  ·  {}%\n\n📩 @leaderodg_bot  ·  {}$ USDT".format(ws["ws"],ws["g001"],ws["g1"],ws["n"],ws["wins"],int(ws["wins"]/ws["n"]*100) if ws["n"] else 0,PRO_PRICE)
             for puid in pru:
@@ -3125,7 +3125,7 @@ def relance_inactifs():
     try:
         inactifs=inactive_users()
         if not inactifs: return
-        st=daily_stats()
+        st=db_daily_stats()
         for uid,uname in inactifs[:20]:
             try:
                 tg_send(uid,"👋 <b>Hey {}!</b>\n\n📡 {} signaux aujourd'hui\n+${} de gains estimés\n\n✅ {} TP  ·  {}% réussite\n\n@leaderodg_bot".format(
@@ -3302,7 +3302,7 @@ def send_welcome(uid, uname):
 def send_account(uid,uname,forced=None):
     plan=forced or get_plan(uid); _,exp,_=db_get_pro_info(uid)
     refs=get_refs(uid); td=count_today(uid); lim={"FREE":FREE_LIMIT,"PRO":PRO_LIMIT,"VIP":999}.get(plan,FREE_LIMIT)
-    st=daily_stats(); ws=weekly_stats()
+    st=db_daily_stats(); ws=db_weekly_stats()
     plan_ico = {"FREE":"👀 FREE","PRO":"💎 PRO","VIP":"👑 VIP"}.get(plan,"📋")
     wr_d = int(st["wins"]/st["n"]*100) if st["n"] else 0
     wr_w = int(ws["wins"]/ws["n"]*100) if ws["n"] else 0
@@ -3347,7 +3347,7 @@ def send_challenge(uid):
             reg.get("regime","?"),reg.get("label","?")),kb=kb_back())
 
 def send_rapports(uid):
-    st=daily_stats(); ws=weekly_stats()
+    st=db_daily_stats(); ws=db_weekly_stats()
     sd=st["n"]; wd_=st["wins"]; wr_d=int(wd_/sd*100) if sd else 0
     sw=ws["n"]; ww=ws["wins"]; wr_w=int(ww/sw*100) if sw else 0
     lines=["📈 <b>RAPPORTS DE PERFORMANCE</b>","═"*22,"","🔥 <b>AUJOURD'HUI</b>",""]
@@ -3366,7 +3366,7 @@ def send_rapports(uid):
 def send_admin_full(uid):
     if uid!=ADMIN_ID: tg_send(uid,"❌ Accès refusé."); return
     total,pro,sigs,pays,g1d=global_stats(); sn,sm,sl_l,_=get_session(); sm=get_adaptive_score_min()
-    st=daily_stats(); pend=pending_pays(); ch=chal_get(); reg=AI_REG
+    st=db_daily_stats(); pend=pending_pays(); ch=chal_get(); reg=AI_REG
     tg_sticker(uid,STK_PRO)
     tg_send(uid,"🛡 <b>ADMIN — AlphaBot v10</b>\n"+"═"*22+"\n\n"
         "👥 Membres: <b>{}</b>  ·  PRO: <b>{}</b>  ·  FREE: <b>{}</b>\n"
@@ -4244,12 +4244,11 @@ def db_count_today(uid):
 def db_daily_stats(date_str=None):
     if not date_str:
         date_str = datetime.now().strftime("%Y-%m-%d")
-    con = _conn(); cur = con.cursor()
-    cur.execute(
+    rows = db_all(
         "SELECT pair,side,rr,g001,g1,l001,l1,session,entry,tp,sl FROM signals "
         "WHERE sent_at LIKE ? ORDER BY sent_at",
         (date_str + "%",))
-    rows = cur.fetchall(); con.close()
+    rows = rows or []
     wins   = sum(1 for r in rows if r[2] >= 3.0)
     losses = len(rows) - wins
     return {
@@ -4329,9 +4328,7 @@ def db_get_open_signals():
 
 
 def db_get_pro_info(uid):
-    con = _conn(); cur = con.cursor()
-    cur.execute("SELECT plan,pro_expires,pro_source FROM users WHERE user_id=?", (uid,))
-    row = cur.fetchone(); con.close()
+    row = db_one("SELECT plan,pro_expires,pro_source FROM users WHERE user_id=?", (uid,))
     return (row[0], row[1], row[2]) if row else ("FREE", None, None)
 
 
@@ -4567,15 +4564,14 @@ def db_update_last_seen(uid):
 
 
 def db_weekly_stats():
-    con = _conn(); cur = con.cursor()
     week_start = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-    cur.execute(
+    rows = db_all(
         "SELECT pair,side,rr,g001,g1,session FROM signals WHERE sent_at>=? ORDER BY sent_at",
         (week_start + " 00:00",))
-    rows = cur.fetchall(); con.close()
+    rows = rows or []
     wins = sum(1 for r in rows if r[2] >= 3.0)
     return {
-        "week_start": week_start, "sig_count": len(rows), "wins": wins,
+        "week_start": week_start, "n": len(rows), "sig_count": len(rows), "wins": wins,
         "total_g001": round(sum(r[3] for r in rows), 2),
         "total_g1":   round(sum(r[4] for r in rows), 2),
         "rows": rows
@@ -5854,7 +5850,7 @@ def kb_admin_full():
 def send_admin_full(uid):
     if uid!=ADMIN_ID: tg_send(uid,"❌ Accès refusé."); return
     total,pro,sigs,pays,g1d=global_stats(); sn,sm,sl_l,_=get_session(); sm=get_adaptive_score_min()
-    st=daily_stats(); pend=pending_pays(); ch=chal_get(); reg=AI_REG
+    st=db_daily_stats(); pend=pending_pays(); ch=chal_get(); reg=AI_REG
     tg_sticker(uid,STK_PRO)
     tg_send(uid,
         "🛡 <b>PANEL ADMIN — AlphaBot v10</b>\n"+"═"*22+"\n\n"
@@ -5873,7 +5869,7 @@ def send_admin_full(uid):
 
 def send_admin_stats_full(uid):
     if uid!=ADMIN_ID: return
-    total,pro,sigs,pays,g1d=global_stats(); st=daily_stats(); ws=weekly_stats()
+    total,pro,sigs,pays,g1d=global_stats(); st=db_daily_stats(); ws=db_weekly_stats()
     con=_conn(); cur=con.cursor()
     cur.execute("SELECT user_id,username,ref_count FROM users GROUP BY user_id ORDER BY ref_count DESC LIMIT 5")
     top=cur.fetchall()
@@ -5922,7 +5918,7 @@ def send_admin_payments_full(uid):
 
 def send_admin_reco(uid):
     if uid!=ADMIN_ID: return
-    total,pro,sigs,pays,g1d=global_stats(); st=daily_stats()
+    total,pro,sigs,pays,g1d=global_stats(); st=db_daily_stats()
     wr=int(st["wins"]/st["n"]*100) if st["n"]>=3 else 0
     recs=[]
     if st["n"]==0: recs.append("📭 Aucun signal — Lance /scan puis /debug pour voir les raisons.")
@@ -5955,7 +5951,7 @@ def send_admin_memory(uid):
 def handle_monstatus_full(uid):
     if uid!=ADMIN_ID: return
     plan,exp,src=get_pro_info(uid); total,pro,sigs,pays,g1d=global_stats()
-    sn,sm,sl_l,wknd=get_session(); st=daily_stats(); ws=weekly_stats()
+    sn,sm,sl_l,wknd=get_session(); st=db_daily_stats(); ws=db_weekly_stats()
     cnt=count_today(uid); pend=pending_pays(); refs=get_refs(uid)
     ch=chal_get(); reg=AI_REG
     win_pct=int(st["wins"]/st["n"]*100) if st["n"] else 0
@@ -6104,7 +6100,7 @@ def _build_promo(pid):
     p=next((x for x in PROMO_MSGS if x["id"]==pid),None)
     if not p: return None
     if pid!="promo_4": return p["text"]
-    st=daily_stats()
+    st=db_daily_stats()
     if not st["n"]: return None
     lines=["📊 <b>RÉSULTATS D\'AUJOURD\'HUI</b>\n"]
     for row in st["rows"]:
@@ -6118,7 +6114,7 @@ def _build_promo(pid):
 
 def send_promo_list(uid):
     if uid!=ADMIN_ID: return
-    st=daily_stats()
+    st=db_daily_stats()
     btns=[[{"text":p["label"],"callback_data":"adm_promo_{}".format(p["id"])}] for p in PROMO_MSGS]
     btns.append([{"text":"◀️ Panel Admin","callback_data":"adm_panel"}])
     tg_send(uid,"📢 <b>MESSAGES PROMO</b>\n"+"═"*22+"\n\nSélectionne un message à envoyer.\n\n📊 Aujourd\'hui: <b>{} signaux · {} TP · +${} lot1</b>".format(st["n"],st["wins"],st["g1"]),kb={"inline_keyboard":btns})
@@ -7457,7 +7453,7 @@ color:#fff;font-size:14px;cursor:pointer;font-weight:700}
     def fl_stats():
         try:
             total, pro, sigs, pays, g1d = global_stats()
-            st = daily_stats()
+            st = db_daily_stats()
             sn, sm, sl_l, wknd = get_session()
             return _jsonify({
                 "total": total, "pro": pro, "free": total-pro,
