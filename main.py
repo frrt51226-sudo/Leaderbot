@@ -6304,38 +6304,29 @@ def dispatch(uid, uname, txt):
     db_run("UPDATE users SET last_seen=? WHERE user_id=?",
            (datetime.now().isoformat(), uid))
 
-    # ── 1. BOUTONS CLAVIER PHYSIQUE — matching STRICT texte complet ──────
-    _MENU_SIGNAUX  = {"📡 Mes Signaux", "📩 Mes Signaux", "🛰 Mes Signaux",
-                      "Mes Signaux", "mes signaux"}
-    _MENU_COMPTE   = {"📊 Mon Compte", "📊 Mon compte", "📊 Mon Tableau de Bord",
-                      "Mon Compte", "mon compte"}
-    _MENU_PRO      = {"💰 Devenir PRO", "💎 Devenir PRO", "💠 Devenir PRO",
-                      "💰 Paiement USDT", "Devenir PRO", "devenir pro"}
-    _MENU_PARRAIN  = {"🤝 Parrainage", "🤝 Devenir Affilié",
-                      "Parrainage", "parrainage"}
-    _MENU_GAINS    = {"💸 Mes Gains", "💰 Mes Gains", "📈 Mes Gains",
-                      "Mes Gains", "mes gains"}
-    _MENU_GUIDE    = {"📖 Guide ICT", "📖 Guide AlphaBot",
-                      "Guide ICT", "guide ict"}
-    _MENU_RAPPORTS = {"📈 Rapports", "Rapports", "rapports"}
-    _MENU_BROKER   = {"🏦 Broker Exness", "Broker Exness", "broker exness"}
+    # ── Migration : supprimer l'ancien clavier physique si présent ───
+    # Les anciens boutons texte sont capturés ici et redirigés vers
+    # les fonctions inline — plus jamais de doublons ou d'erreurs emoji.
+    _t_lower = t.lower()
 
-    if t in _MENU_SIGNAUX:
+    # ── 1. BOUTONS DU CLAVIER PHYSIQUE (texte — toutes variantes) ────
+    if "signaux" in _t_lower or t in ("📡 Mes Signaux", "📩 Mes Signaux", "🛰 Mes Signaux"):
         threading.Thread(target=send_signals_info, args=(uid,), daemon=True).start(); return
-    if t in _MENU_COMPTE:
+    if "mon compte" in _t_lower or "tableau de bord" in _t_lower or t == "📊 Mon Compte":
         forced = _test_mode if uid == ADMIN_ID and _test_mode else None
         threading.Thread(target=send_account, args=(uid, uname, forced), daemon=True).start(); return
-    if t in _MENU_PRO:
+    if ("devenir pro" in _t_lower or "paiement usdt" in _t_lower
+            or t in ("💰 Devenir PRO", "💎 Devenir PRO", "💠 Devenir PRO")):
         threading.Thread(target=send_pro_page, args=(uid,), daemon=True).start(); return
-    if t in _MENU_PARRAIN:
+    if "parrainage" in _t_lower or "affilié" in _t_lower or t == "🤝 Parrainage":
         threading.Thread(target=send_affilie, args=(uid, uname), daemon=True).start(); return
-    if t in _MENU_GAINS:
+    if "mes gains" in _t_lower or t in ("💸 Mes Gains", "💰 Mes Gains", "📈 Mes Gains"):
         threading.Thread(target=send_mes_gains, args=(uid,), daemon=True).start(); return
-    if t in _MENU_GUIDE:
+    if "guide" in _t_lower or t in ("📖 Guide ICT", "📖 Guide AlphaBot"):
         threading.Thread(target=send_guide, args=(uid,), daemon=True).start(); return
-    if t in _MENU_RAPPORTS:
+    if t == "📈 Rapports" or t.lower() == "rapports":
         threading.Thread(target=send_rapports, args=(uid,), daemon=True).start(); return
-    if t in _MENU_BROKER:
+    if "broker" in _t_lower or "exness" in _t_lower or t == "🏦 Broker Exness":
         threading.Thread(target=send_broker, args=(uid,), daemon=True).start(); return
 
     # ── 2. BROADCAST ADMIN (texte libre en attente) ──────────────
@@ -6378,25 +6369,21 @@ def dispatch(uid, uname, txt):
     # ── Commandes admin ────────────────────────────────────────────
     if uid == ADMIN_ID:
         if cmd == "resetkb":
-            # ── Supprime clavier physique chez TOUS les users ──
             def _do_resetkb():
                 try:
-                    rows = db_fetch("SELECT user_id FROM users", ())
+                    rows = db_all("SELECT user_id FROM users")
                     ok = err = 0
                     for (ruid,) in rows:
                         try:
-                            tg_send(ruid, "🔄 Menu mis à jour.", kb={"remove_keyboard": True})
+                            tg_send(ruid, "✅ Menu mis à jour ↓", kb={"remove_keyboard": True})
                             time.sleep(0.05)
-                            tg_send(ruid,
-                                "✅ <b>AlphaBot PRO</b> — clique un bouton ci-dessous ↓",
-                                kb=kb_main(is_pro(ruid)))
+                            tg_send(ruid, "🤖 <b>AlphaBot PRO</b> — Clique un bouton ↓", kb=kb_main(is_pro(ruid)))
                             ok += 1
-                        except Exception:
-                            err += 1
-                    tg_send(uid, "✅ /resetkb — {} OK · {} erreurs".format(ok, err))
+                        except Exception: err += 1
+                    tg_send(uid, "✅ /resetkb — {} OK  ·  {} erreurs".format(ok, err))
                 except Exception as e:
-                    tg_send(uid, "❌ resetkb erreur: {}".format(e))
-            tg_send(uid, "🔄 Suppression clavier physique en cours...")
+                    tg_send(uid, "❌ resetkb: {}".format(e))
+            tg_send(uid, "🔄 Réinitialisation clavier en cours...")
             threading.Thread(target=_do_resetkb, daemon=True).start(); return
         if cmd == "scan":
             tg_send(uid, "📡 Scan lancé...")
@@ -7389,8 +7376,8 @@ def main():
             })
             if r.get("ok"): log("INFO", clr("Webhook OK — Bot prêt!", "b", "g"))
             else: log("ERR", clr("Webhook échoué: {}".format(r), "red"))
-            # Broadcast nouvelle version à tous les membres
-            threading.Thread(target=broadcast_new_version, daemon=True).start()
+            # Broadcast désactivé — ne pas spammer les users au redémarrage
+            # threading.Thread(target=broadcast_new_version, daemon=True).start()
             # Message de démarrage admin
             sn, sm, sl_l, wknd = get_session()
             sm_real = get_adaptive_score_min()
@@ -7456,8 +7443,8 @@ def main():
             if not batch: break
             offset=batch[-1]["update_id"]+1
         log("INFO", clr("Polling démarré (offset={})".format(offset), "g"))
-        # Broadcast nouvelle version
-        threading.Thread(target=broadcast_new_version, daemon=True).start()
+        # Broadcast désactivé — ne pas spammer les users au redémarrage
+        # threading.Thread(target=broadcast_new_version, daemon=True).start()
         ls=la=lc=0
         while True:
             try:
