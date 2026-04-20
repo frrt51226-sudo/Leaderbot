@@ -96,105 +96,68 @@ def _claude_session_risk(session: str) -> str:
 
 
 def _claude_build_prompt(sig: dict, session: str, htf_trend: str) -> str:
-    """
-    Prompt ICT/SMC v19 — Ultra-précis pour maximiser la rentabilité.
-    Claude joue le rôle d'un Head of Trading institutionnel.
-    Analyse 12 critères + donne SL/TP optimisés + niveau de confiance.
-    """
+    """Construit le prompt ICT envoyé à Claude."""
     side_fr  = "ACHAT (LONG)" if sig.get("side") == "BUY" else "VENTE (SHORT)"
     now_utc  = datetime.now(timezone.utc).strftime("%H:%M UTC")
-    now_day  = datetime.now(timezone.utc).strftime("%A")
     entry, sl_v, tp = sig.get("entry","?"), sig.get("sl","?"), sig.get("tp","?")
     try:
-        dist_sl  = "{:.3f}%".format(abs(float(entry)-float(sl_v))/float(entry)*100)
-        dist_tp  = "{:.3f}%".format(abs(float(tp)-float(entry))/float(entry)*100)
-        risk_amt = abs(float(entry)-float(sl_v))
-        tp2      = round(float(entry) + risk_amt * 4.5, 5) if sig.get("side")=="BUY" \
-                   else round(float(entry) - risk_amt * 4.5, 5)
-        tp3      = round(float(entry) + risk_amt * 6.0, 5) if sig.get("side")=="BUY" \
-                   else round(float(entry) - risk_amt * 6.0, 5)
+        dist_sl = "{:.3f}%".format(abs(float(entry)-float(sl_v))/float(entry)*100)
+        dist_tp = "{:.3f}%".format(abs(float(tp)-float(entry))/float(entry)*100)
     except Exception:
         dist_sl = dist_tp = "?"
-        tp2 = tp3 = tp
+    return """Tu es un trader ICT/SMC institutionnel expert avec 10 ans d'expérience.
 
-    m5_info = ""
-    if sig.get("m5_conf"):
-        mc = sig["m5_conf"]
-        m5_info = "M5 confirmé: {} | badges: {}".format(
-            "OUI" if mc.get("ok") else "NON",
-            ", ".join(mc.get("badges", [])) or "aucun")
+Ton rôle : analyser CE SETUP précis et donner un verdict VALIDER ou REJETER.
 
-    return """Tu es Head of Trading d'un fonds institutionnel, expert ICT/SMC avec 15 ans d'expérience.
-Ta mission : évaluer CE setup avec une RIGUEUR ABSOLUE pour protéger le capital.
-Seuls les setups EXCEPTIONNELS passent. Sois impitoyable.
-
-══ SETUP À ANALYSER ══════════════════════════════
-🕐 Heure UTC    : {heure} ({day})
-📊 Instrument   : {pair}  ({cat})
-📈 Sens         : {side}
+━━━ SETUP DÉTECTÉ ━━━
+🕐 Heure        : {heure}
+📊 Actif        : {pair}
+📈 Direction    : {side}
 🌍 Session      : {session}
-📉 Biais HTF H1 : {htf}
-⏱️ TF d'entrée  : {tf}
-⚡ Mode trade   : {mode}
+📉 Tendance HTF : {htf}
+⏱️ Timeframe    : {tf}
+⚡ Mode         : {mode}
 
-══ NIVEAUX DE PRIX ══════════════════════════════
-📍 Entrée       : {entry}
-🛑 Stop Loss    : {sl}     ({dist_sl} de distance)
-🎯 TP1 (x3 RR)  : {tp}     ({dist_tp} du stop)
-🎯 TP2 (x4.5)   : {tp2}
-🎯 TP3 (x6.0)   : {tp3}
-📐 RR actuel    : 1:{rr}
-📏 ATR M15      : {atr}
-{m5_info}
+━━━ NIVEAUX CLÉS ━━━
+📍 Entrée : {entry}
+🛑 Stop   : {sl}  ({dist_sl} de distance)
+🎯 TP     : {tp}  ({dist_tp} de distance)
+📐 RR     : 1:{rr}
+📏 ATR    : {atr}
 
-══ CONFIRMATIONS ALGO ═══════════════════════════
-Score algo     : {score}/100  (min requis: {score_min})
-Badges ICT     : {badges}
-Liquidité      : {liq}
+━━━ CONFIRMATIONS ALGO ━━━
+Score algo : {score}/100
+Badges ICT : {badges}
 
-══ CONTEXTE DE MARCHÉ ═══════════════════════════
+━━━ RISQUE SESSION ━━━
 {session_risk}
 
-══ 12 CRITÈRES D'ANALYSE (sois STRICT sur chacun) ══
-1.  ALIGNEMENT HTF    : Biais H1 confirmé par EMA20/50 + HH/LL ?
-2.  STRUCTURE M15     : BOS/CHoCH propre ? Order Block défensible ?
-3.  ENTRÉE M5         : Displacement fort sur M5 ? Pas de zone chaotique ?
-4.  LIQUIDITÉ         : Sweep authentique de EQH/EQL/swing ? Ou faux signal ?
-5.  FVG               : Fair Value Gap M15 actif dans la direction ?
-6.  OTE               : Prix dans la zone 62-79% de retracement de Fibonacci ?
-7.  SESSION           : Session idéale pour cette paire ? (London/NY pour Forex)
-8.  TIMING CLÔTURE    : Risque de clôture de session < 2h avant TP1 ?
-9.  RR QUALITÉ        : RR 1:{rr} est-il justifié par la structure ? TP2 atteignable ?
-10. KILL ZONE         : Dans une kill zone institutionnelle (8-10h / 13-15h UTC) ?
-11. ANTI-RETAIL       : Setup va dans sens inverse des retail traders piégés ?
-12. MOMENTUM          : Momentum M15 + M5 convergents avec le sens ?
+━━━ TA MISSION ━━━
+Analyse selon 6 critères (sois STRICT) :
+1. DIRECTION : aligné HTF + session ?
+2. TIMING : TP atteignable en <4h ? Risque clôture session ?
+3. BOUGIE : confirmation propre ? Displacement fort ?
+4. LIQUIDITÉ : sweep authentique ou fake ?
+5. SESSION : risque rollover/fixing/open ?
+6. FONDAMENTAUX : setup contre news imminente ?
 
-══ FORMAT RÉPONSE ════════════════════════════════
-Réponds UNIQUEMENT avec ce JSON exact, rien d'autre :
+━━━ FORMAT OBLIGATOIRE ━━━
+Réponds UNIQUEMENT avec ce JSON exact, sans texte avant ni après :
 
 {{
   "score": <0-10>,
   "probabilite": <0-100>,
   "verdict": "VALIDER" ou "REJETER",
-  "confiance": "FAIBLE" ou "MOYENNE" ou "HAUTE" ou "EXCEPTIONNELLE",
-  "raison": "<analyse concise 2-3 phrases expliquant le verdict>",
-  "risque_principal": "<le risque #1 en une phrase courte>",
-  "timing_ok": true ou false,
-  "tp_recommande": <1 ou 2 ou 3>,
-  "sl_optimal": <prix SL optimal selon ta lecture ou null>,
-  "criteres_ok": <nombre de critères validés sur 12>,
-  "conseil_entree": "<timing ou condition d'entrée optimale, 1 phrase>"
+  "raison": "<2-3 phrases max, français, très concis>",
+  "risque_principal": "<risque #1 en une phrase>",
+  "timing_ok": true ou false
 }}""".format(
-        heure=now_utc, day=now_day,
-        pair=sig.get("name","?"), cat=sig.get("cat","?"), side=side_fr,
+        heure=now_utc, pair=sig.get("name","?"), side=side_fr,
         session=session, htf=htf_trend, tf=sig.get("tf_tag","M5"),
         mode=sig.get("mode","NORMAL"), entry=entry, sl=sl_v,
-        dist_sl=dist_sl, tp=tp, dist_tp=dist_tp, tp2=tp2, tp3=tp3,
-        rr=sig.get("rr","?"), atr=sig.get("atr","?"),
-        score=sig.get("score","?"), score_min=sig.get("score_min",72),
+        dist_sl=dist_sl, tp=tp, dist_tp=dist_tp, rr=sig.get("rr","?"),
+        atr=sig.get("atr","?"), score=sig.get("score","?"),
         badges=sig.get("badges","Aucun badge"),
-        liq=sig.get("liq",{}).get("label","?") if sig.get("liq") else "?",
-        m5_info=m5_info,
         session_risk=_claude_session_risk(session))
 
 
@@ -351,46 +314,30 @@ def claude_validate_signal(sig: dict, session: str, htf_trend: str) -> dict:
     raison    = parsed.get("raison", "?")
     risque    = parsed.get("risque_principal", "?")
     timing_ok = bool(parsed.get("timing_ok", False))
-    confiance = parsed.get("confiance", "FAIBLE")
-    tp_rec    = int(parsed.get("tp_recommande", 1))
-    sl_opt    = parsed.get("sl_optimal", None)
-    criteres  = int(parsed.get("criteres_ok", 0))
-    conseil   = parsed.get("conseil_entree", "")
 
     # Score hybride : algo 60% + IA 40%
     algo_sc    = float(sig.get("score", 0))
     ai_sc_n    = (ai_score / 10.0) * 100
     final_sc   = round(algo_sc * ALGO_WEIGHT + ai_sc_n * AI_WEIGHT, 1)
 
-    # Bonus confiance : HAUTE/EXCEPTIONNELLE allège légèrement le seuil
-    conf_bonus = {"FAIBLE": 0, "MOYENNE": 0, "HAUTE": 3, "EXCEPTIONNELLE": 6}.get(confiance, 0)
-    # Bonus critères : 10/12 critères OK → setup institutionnel
-    crit_bonus = max(0, (criteres - 8) * 2)
-
     validated = (verdict == "VALIDER"
                  and ai_score  >= AI_SCORE_MIN
                  and ai_proba  >= AI_PROBA_MIN
-                 and (final_sc + conf_bonus + crit_bonus) >= FINAL_HYBRID_MIN
-                 and timing_ok
-                 and criteres  >= 7)   # au moins 7/12 critères validés
+                 and final_sc  >= FINAL_HYBRID_MIN
+                 and timing_ok)
 
     result = {
-        "validated"     : validated,
-        "ai_score"      : round(ai_score, 1),
-        "ai_proba"      : round(ai_proba, 1),
-        "verdict"       : verdict,
-        "confiance"     : confiance,
-        "raison"        : raison,
-        "risque"        : risque,
-        "final_score"   : final_sc,
-        "timing_ok"     : timing_ok,
-        "tp_recommande" : tp_rec,
-        "sl_optimal"    : sl_opt,
-        "criteres_ok"   : criteres,
-        "conseil_entree": conseil,
-        "elapsed_s"     : elapsed,
-        "ai_source"     : ai_source,
-        "cached"        : False,
+        "validated"  : validated,
+        "ai_score"   : round(ai_score, 1),
+        "ai_proba"   : round(ai_proba, 1),
+        "verdict"    : verdict,
+        "raison"     : raison,
+        "risque"     : risque,
+        "final_score": final_sc,
+        "timing_ok"  : timing_ok,
+        "elapsed_s"  : elapsed,
+        "ai_source"  : ai_source,   # "claude" | "gemini" | "both" | "none"
+        "cached"     : False,
     }
     icon = "✅" if validated else "❌"
     _LAI.info("{} {} | {} | Score {}/10 | Proba {}% | Hybride {}/100 | {}s".format(
@@ -403,7 +350,7 @@ def claude_validate_signal(sig: dict, session: str, htf_trend: str) -> dict:
 
 
 def fmt_ai_block(ai: dict) -> str:
-    """Bloc HTML IA v19 — affiche toutes les données de rentabilité."""
+    """Bloc HTML IA à coller en fin du message signal PRO."""
     if not ai or ai.get("verdict") in ("ERREUR", None, ""):
         return ""
     verdict   = ai.get("verdict", "?")
@@ -415,40 +362,6 @@ def fmt_ai_block(ai: dict) -> str:
     timing    = "✅" if ai.get("timing_ok") else "⚠️"
     v_icon    = "✅" if verdict == "VALIDER" else "❌"
     bar       = "█" * int(ai_score) + "░" * (10 - int(ai_score))
-    confiance = ai.get("confiance", "")
-    criteres  = ai.get("criteres_ok", 0)
-    conseil   = ai.get("conseil_entree", "")
-    tp_rec    = ai.get("tp_recommande", 1)
-    sl_opt    = ai.get("sl_optimal")
-
-    conf_icon = {"FAIBLE":"🔴","MOYENNE":"🟡","HAUTE":"🟢","EXCEPTIONNELLE":"🏆"}.get(confiance,"⚪")
-    tp_labels = {1:"TP1 (RR×3)", 2:"TP2 (RR×4.5)", 3:"TP3 (RR×6.0)"}
-
-    src_label = {"claude":"🤖 Claude","gemini":"✨ Gemini","both":"🤖+✨ Dual AI","none":"⚙️ Algo"}.get(
-        ai.get("ai_source",""), "🤖 IA")
-
-    lines = [
-        "",
-        "━"*20,
-        "{} <b>ANALYSE {} — {}</b>".format(src_label, src_label.split()[-1].upper(), v_icon),
-        "",
-        "🎯 Score IA   : <b>{}/10</b>  [{}]".format(ai_score, bar),
-        "📊 Probabilité: <b>{}%</b>  |  Hybride: <b>{}/100</b>".format(ai_proba, final_sc),
-        "🏅 Confiance  : {} <b>{}</b>".format(conf_icon, confiance),
-        "✅ Critères   : <b>{}/12</b> validés".format(criteres),
-        "⏱️ Timing     : {}".format(timing),
-        "",
-        "💡 <b>Verdict :</b> {}".format(raison),
-    ]
-    if risque:
-        lines.append("⚠️ <b>Risque #1 :</b> {}".format(risque))
-    if conseil:
-        lines.append("📌 <b>Conseil entrée :</b> {}".format(conseil))
-    lines.append("🎯 <b>TP recommandé :</b> {}".format(tp_labels.get(tp_rec,"TP1")))
-    if sl_opt:
-        lines.append("🛡️ <b>SL optimal IA :</b> <code>{}</code>".format(sl_opt))
-    lines.append("━"*20)
-    return "\n".join(lines)
 
     # Label dynamique selon la source IA utilisée
     source = ai.get("ai_source", "claude").lower()
@@ -524,6 +437,15 @@ def get_trade_mode(m):
     if wd >= 5 and m["cat"] == "CRYPTO":
         return "SCALP"
     return "NORMAL"
+
+# ── Alias constantes v13 (rétrocompatibilité) ─────────────────────
+INACTIF_DAYS     = 3
+DATA_MAX_AGE_MIN = DATA_MAX_AGE
+BOT_USERNAME     = BOT_USER
+PRO_PROMO        = PRO_PRICE
+NB_AGENTS        = 20
+VIP_CHANNEL      = VIP_CH       # alias v13
+
 
 # ══════════════════════════════════════════════════════
 #  LOGGER
@@ -2402,32 +2324,9 @@ def fmt_pro(s, news, sl_label):
         "",
         "⚡ <b>Risk conseillé</b> : {}".format(risk_txt),
         "📰 News : {}  ·  Spread : {}".format(news_lbl, sp_s),
-    ]
-
-    # ── Bloc IA Claude v19 ────────────────────────────────────────
-    ai = s.get("ai_result", {})
-    if ai and ai.get("verdict") not in ("ERREUR", None, ""):
-        ai_block = fmt_ai_block(ai)
-        if ai_block:
-            lines.append(ai_block)
-        # TP2 institutionnel optimisé par Claude
-        if s.get("tp2"):
-            dp2 = 2 if float(s.get("entry",1)) > 100 else 5
-            rr2 = s.get("rr_tp2", "?")
-            lines.append("🎯 <b>TP2 institutionnel :</b> <code>{}</code>  (RR 1:{})".format(
-                round(float(s["tp2"]), dp2), rr2))
-        # SL optimisé par Claude
-        if s.get("sl_ai"):
-            lines.append("🛡️ <b>SL optimisé IA :</b> <code>{}</code>".format(s["sl_ai"]))
-        # Note d'optimisation
-        if s.get("ai_note"):
-            lines.append("💡 {}".format(s["ai_note"]))
-    # ─────────────────────────────────────────────────────────────
-
-    lines += [
         sep,
         "⚠️ Analyse technique uniquement — pas un conseil financier",
-        "🤖 <b>AlphaBot PRO v19</b>  ·  @leaderodg_bot",
+        "🤖 <b>AlphaBot PRO v17</b>  ·  @leaderodg_bot",
     ]
     return "\n".join(l for l in lines if l is not None)
 
@@ -2737,11 +2636,6 @@ _cycles_no_signal = 0
 _sent_lock         = _sent_lk
 _last_daily        = _last_d
 _last_weekly       = _last_w
-# ── Store signaux actifs (pour bouton vérification) ──────────
-_ACTIVE_SIGNALS      = {}   # {pair_side_key: sig_dict}
-_ACTIVE_SIGNALS_LOCK = threading.Lock()
-_PAIR_LAST_SIGNAL    = {}   # {pair_name: date_str}
-
 _scan_running      = False
 _admin_test_mode   = ""
 _last_scan_results = []
@@ -2852,49 +2746,6 @@ def _scan_inner():
     with _sent_lk: sigs = [(s, k) for s, k in sigs if k not in _sent]
     sigs.sort(key=lambda x: -x[0]["score"])
 
-    # ── ✨ Validation Claude AI (Risk Manager) ────────────────────
-    # Pipeline : Algo (analyste) → Claude (validateur) → Script (juge)
-    if CLAUDE_API_KEY and sigs:
-        sigs_validated = []
-        for sig, key in sigs:
-            if sig.get("rr", 0) >= 2.0 and sig.get("score", 0) >= sm:
-                htf_trend = sig.get("bias", "BULLISH")
-                ai_result = claude_validate_signal(sig, sn, htf_trend)
-                sig["ai_result"] = ai_result
-                if ai_result["validated"]:
-                    sigs_validated.append((sig, key))
-                else:
-                    log("AI", "❌ {} rejeté — {} (hybride {}/100)".format(
-                        sig["name"],
-                        ai_result.get("raison","?")[:60],
-                        ai_result.get("final_score", 0)))
-            else:
-                sig["ai_result"] = {}
-                sigs_validated.append((sig, key))
-        log("AI", "Filtre Claude : {}/{} validés".format(len(sigs_validated), len(sigs)))
-        sigs = sigs_validated
-
-        # ── Optimisation TP/SL par Claude sur les signaux validés ──
-        for idx, (sig, key) in enumerate(sigs):
-            if sig.get("ai_result", {}).get("validated"):
-                try:
-                    opt = claude_optimize_tp_sl(sig, sn)
-                    if opt:
-                        if opt.get("sl_optimise"):
-                            sig["sl_ai"] = opt["sl_optimise"]   # SL optimisé
-                        if opt.get("tp1_optimise"):
-                            sig["tp_ai"] = opt["tp1_optimise"]  # TP1 optimisé
-                        if opt.get("tp2"):
-                            sig["tp2"]   = opt["tp2"]           # TP2 institutionnel
-                        if opt.get("rr_tp2"):
-                            sig["rr_tp2"] = opt["rr_tp2"]
-                        sig["ai_note"] = opt.get("note", "")
-                        sigs[idx] = (sig, key)
-                except Exception as _oe:
-                    log("WARN", "Optim TP/SL: {}".format(_oe))
-    # ─────────────────────────────────────────────────────────────
-
-
 
 
     # Message promo FREE (Exness + activer PRO)
@@ -2964,15 +2815,10 @@ def _scan_inner():
                 clr(sig["name"], "b", "c"), sig["side"], sig["rr"], sc, sig["g1"]))
 
         # ── DM individuels : 1 seul message + bouton recheck ──────────
-        # ── Stocker signal actif pour recheck live ──────────────
-        pair_side_key = "{}-{}".format(sig.get("name",""), sig.get("side",""))
-        sig["_check_key"] = pair_side_key
-        sig["_ts"] = datetime.now(timezone.utc).isoformat()
-        with _ACTIVE_SIGNALS_LOCK:
-            _ACTIVE_SIGNALS[pair_side_key] = dict(sig)
+        _sig_id = sig.get("id") or key   # identifiant unique du signal
         kb_sig = {"inline_keyboard": [
-            [{"text": "🔍 Vérifier si signal valide",
-              "callback_data": "check_sig_{}".format(pair_side_key)}],
+            [{"text": "🔍 Signal encore valide ?",
+              "callback_data": "recheck_{}".format(_sig_id)}],
             [{"text": "◀️ Menu", "callback_data": "start"}],
         ]}
         for uid in all_users():
@@ -3282,7 +3128,7 @@ def _group_invite_msg(pro=False):
                                  [{"text":"◀️ Retour","callback_data":"start"}]]}
 
 def send_welcome(uid, uname):
-    db_register(uid, uname)
+    db_register(uid, uname, tg_fn=tg_send)
     p = is_pro(uid); ch = chal_get()
     plan = get_plan(uid)
     tg_sticker(uid, STK_W)
@@ -3300,7 +3146,7 @@ def send_welcome(uid, uname):
     tg_send(uid, inv_msg, kb=inv_kb)
 
 def send_account(uid,uname,forced=None):
-    plan=forced or get_plan(uid); _,exp,_=db_get_pro_info(uid)
+    plan=forced or get_plan(uid); _,exp,_=get_pro_info(uid)
     refs=get_refs(uid); td=count_today(uid); lim={"FREE":FREE_LIMIT,"PRO":PRO_LIMIT,"VIP":999}.get(plan,FREE_LIMIT)
     st=daily_stats(); ws=weekly_stats()
     plan_ico = {"FREE":"👀 FREE","PRO":"💎 PRO","VIP":"👑 VIP"}.get(plan,"📋")
@@ -4253,7 +4099,7 @@ def db_daily_stats(date_str=None):
     wins   = sum(1 for r in rows if r[2] >= 3.0)
     losses = len(rows) - wins
     return {
-        "date": date_str, "n": len(rows), "sig_count": len(rows), "wins": wins, "losses": losses,
+        "date": date_str, "sig_count": len(rows), "wins": wins, "losses": losses,
         "total_g001": round(sum(r[3] for r in rows), 2),
         "total_g1":   round(sum(r[4] for r in rows), 2),
         "rows": rows
@@ -5673,7 +5519,7 @@ def kb_admin_back(): return {"inline_keyboard":[[{"text":"◀️ Panel Admin","c
 #  MESSAGES UTILISATEURS COMPLETS
 # ══════════════════════════════════════════════════════
 def send_welcome(uid, uname, ref_by=0):
-    db_register(uid, uname, ref_by)
+    db_register(uid, uname, ref_by, tg_fn=tg_send)
     tg_sticker(uid, STK_W)
     p = is_pro(uid); sn,sm,sl_l,wknd = get_session()
     plan_line = ("🎁 <b>ESSAI PRO {} JOURS OFFERT !</b> ✅".format(TRIAL_DAYS) if p
@@ -5703,7 +5549,7 @@ def send_start(uid, uname, ref_by=0):
     send_welcome(uid, uname)
 
 def send_signals_info(uid):
-    p = is_pro(uid); st = db_daily_stats(); rows = st["rows"]
+    p = is_pro(uid); st = daily_stats(); rows = st["rows"]
     sn,sm,sl_l,wknd = get_session()
     cnt = count_today(uid); lim = PRO_LIMIT if p else FREE_LIMIT
     today = datetime.now().strftime("%d/%m/%Y")
@@ -5789,7 +5635,7 @@ def send_pay_plan(uid, plan_key="PRO"):
         ]})
 
 def send_mes_gains(uid):
-    st = db_daily_stats()
+    st = daily_stats()
     if not st["n"]: tg_send(uid,"💸 <b>MES GAINS</b>\n\nAucun signal aujourd\'hui.",kb=kb_back()); return
     lines = ["💸 <b>GAINS DU JOUR</b>","═"*22,""]
     for row in st["rows"]:
@@ -6626,388 +6472,6 @@ def dispatch(uid, uname, txt):
     send_welcome(uid, uname)
 
 
-# ══════════════════════════════════════════════════════════════════════
-#  FONCTIONS CLAUDE AI AVANCÉES v19 — MAXIMISATION RENTABILITÉ
-# ══════════════════════════════════════════════════════════════════════
-
-def claude_optimize_tp_sl(sig: dict, session: str) -> dict:
-    """
-    Claude optimise les niveaux TP/SL selon la structure institutionnelle.
-    Appelé APRÈS validation pour affiner les niveaux avant envoi.
-    """
-    if not _ANTHROPIC_OK or not CLAUDE_API_KEY:
-        return {}
-    try:
-        entry = float(sig.get("entry", 0))
-        tp    = float(sig.get("tp", 0))
-        sl    = float(sig.get("sl", 0))
-        side  = sig.get("side", "BUY")
-        atr_v = float(sig.get("atr", 0))
-        risk  = abs(entry - sl)
-
-        prompt = """Tu es un Risk Manager institutionnel ICT. Optimise ces niveaux de trade.
-
-Signal : {pair} {side}
-Entrée  : {entry}
-SL actuel : {sl}
-TP actuel : {tp}
-ATR M15   : {atr}
-Session   : {session}
-Badges    : {badges}
-
-Règles d'optimisation :
-- SL doit être SOUS le dernier swing low (BUY) ou AU-DESSUS du swing high (SELL)
-- SL minimum = 1.1× ATR de distance de l'entrée
-- TP1 = RR 1:3 minimum
-- TP2 = niveau institutionnel suivant (liquidité haute, gap, OB supérieur)
-- Si le SL actuel est trop proche (<0.8× ATR), l'éloigner légèrement
-
-Réponds UNIQUEMENT avec ce JSON :
-{{
-  "sl_optimise": <prix ou null si OK>,
-  "tp1_optimise": <prix ou null si OK>,
-  "tp2": <prix TP2 institutionnel>,
-  "rr_tp1": <nouveau RR TP1>,
-  "rr_tp2": <nouveau RR TP2>,
-  "note": "<raison de l'optimisation, 1 phrase>"
-}}""".format(
-            pair=sig.get("name","?"), side=side,
-            entry=entry, sl=sl, tp=tp, atr=atr_v,
-            session=session, badges=sig.get("badges","?")[:100])
-
-        client = _anthropic_sdk.Anthropic(api_key=CLAUDE_API_KEY)
-        resp = client.messages.create(
-            model=CLAUDE_MODEL, max_tokens=400,
-            messages=[{"role": "user", "content": prompt}])
-        raw = resp.content[0].text.strip()
-        if "```" in raw:
-            raw = raw.split("```")[1]
-            if raw.startswith("json"): raw = raw[4:]
-        result = json.loads(raw.strip())
-        _LAI.info("Optimisation TP/SL {} — RR TP1:{} TP2:{}".format(
-            sig.get("name","?"), result.get("rr_tp1","?"), result.get("rr_tp2","?")))
-        return result
-    except Exception as e:
-        _LAI.error("claude_optimize_tp_sl: {}".format(e))
-        return {}
-
-
-def claude_market_context(pairs_scanned: list, session: str) -> str:
-    """
-    Claude analyse le contexte global des marchés avant le scan.
-    Retourne un texte de contexte à inclure dans le message admin.
-    """
-    if not _ANTHROPIC_OK or not CLAUDE_API_KEY:
-        return ""
-    try:
-        now_utc = datetime.now(timezone.utc).strftime("%H:%M UTC — %A")
-        pairs_str = ", ".join(pairs_scanned[:10]) if pairs_scanned else "?"
-
-        prompt = """Tu es un trader institutionnel ICT. Donne un contexte de marché ultra-concis.
-
-Heure : {heure}
-Session : {session}
-Paires actives : {pairs}
-
-En 3 bullets maximum :
-- Quel est le régime de marché dominant aujourd'hui ? (trending / ranging / choppy)
-- Quelle session est la plus propice aux setups ICT maintenant ?
-- 1 paire prioritaire à surveiller et pourquoi
-
-Format : texte HTML Telegram sans JSON, 3 lignes max, émojis, très concis.""".format(
-            heure=now_utc, session=session, pairs=pairs_str)
-
-        client = _anthropic_sdk.Anthropic(api_key=CLAUDE_API_KEY)
-        resp = client.messages.create(
-            model=CLAUDE_MODEL, max_tokens=250,
-            messages=[{"role": "user", "content": prompt}])
-        return resp.content[0].text.strip()
-    except Exception as e:
-        _LAI.error("claude_market_context: {}".format(e))
-        return ""
-
-
-def claude_entry_alert(sig: dict, current_price: float) -> dict:
-    """
-    Alerte intelligente : Claude décide si le prix actuel est optimal
-    pour entrer MAINTENANT ou s'il faut attendre.
-    """
-    if not _ANTHROPIC_OK or not CLAUDE_API_KEY:
-        return {"entrer": True, "raison": "IA non disponible"}
-    try:
-        entry = float(sig.get("entry", 0))
-        sl    = float(sig.get("sl", 0))
-        tp    = float(sig.get("tp", 0))
-        side  = sig.get("side", "BUY")
-        dist_from_entry_pct = abs(current_price - entry) / entry * 100
-
-        prompt = """Signal ICT en attente. Dois-je entrer MAINTENANT ou attendre ?
-
-Signal : {pair} {side}
-Prix entrée idéale : {entry}
-Prix actuel        : {current}
-Distance entrée    : {dist:.3f}%
-SL : {sl}  |  TP : {tp}
-RR : 1:{rr}
-Badges : {badges}
-
-Règle : entrer si prix dans ±0.15% de l'entrée ET structure intacte.
-Si prix trop loin de l'entrée → attendre pullback.
-Si prix déjà TP side → signal expiré.
-
-Réponds UNIQUEMENT JSON :
-{{
-  "entrer": true ou false,
-  "urgence": "IMMEDIATE" ou "ATTENDRE" ou "EXPIRE",
-  "raison": "<1 phrase>",
-  "prix_optimal": <prix d'entrée optimal selon toi>
-}}""".format(
-            pair=sig.get("name","?"), side=side,
-            entry=entry, current=round(current_price,5),
-            dist=dist_from_entry_pct, sl=sl, tp=tp,
-            rr=sig.get("rr","?"), badges=sig.get("badges","?")[:80])
-
-        client = _anthropic_sdk.Anthropic(api_key=CLAUDE_API_KEY)
-        resp = client.messages.create(
-            model=CLAUDE_MODEL, max_tokens=200,
-            messages=[{"role": "user", "content": prompt}])
-        raw = resp.content[0].text.strip()
-        if "```" in raw:
-            raw = raw.split("```")[1]
-            if raw.startswith("json"): raw = raw[4:]
-        return json.loads(raw.strip())
-    except Exception as e:
-        _LAI.error("claude_entry_alert: {}".format(e))
-        return {"entrer": True, "urgence": "IMMEDIATE", "raison": "IA erreur — entrée par défaut"}
-
-
-def _claude_rapport_analyse(trades_today, trades_week):
-    """Analyse les vrais trades avec Claude AI et génère un rapport."""
-    if not _ANTHROPIC_OK or not CLAUDE_API_KEY:
-        return None
-    try:
-        def fmt_trade(t):
-            pair  = t[0]; side = t[1]; rr = t[2]
-            g001  = t[3]; g1   = t[4]; l001 = t[5]; l1 = t[6]
-            entry = t[8]  if len(t) > 8 else "?"
-            tp    = t[9]  if len(t) > 9 else "?"
-            sl    = t[10] if len(t) > 10 else "?"
-            result = "TP ATTEINT (+${:.0f} lot1)".format(g1) if rr >= 3.0 \
-                     else "SL TOUCHE (-${:.0f} lot1)".format(l1)
-            return "  * {} {} | Entree:{} TP:{} SL:{} | RR 1:{} | {}".format(
-                pair, side, entry, tp, sl, rr, result)
-
-        today_lines = [fmt_trade(t) for t in trades_today] if trades_today \
-                      else ["  Aucun trade aujourd'hui"]
-        week_lines  = [fmt_trade(t) for t in trades_week]  if trades_week  \
-                      else ["  Aucun trade cette semaine"]
-
-        prompt = (
-            "Tu es l'analyste senior d'AlphaBot PRO, un bot de signaux ICT/SMC.\n\n"
-            "Voici les VRAIS trades realises aujourd'hui :\n"
-            + "\n".join(today_lines) +
-            "\n\nVoici les trades de la semaine (7 derniers jours) :\n"
-            + "\n".join(week_lines) +
-            "\n\nTa mission :\n"
-            "1. Analyse la PERFORMANCE reelle (winrate, gains/pertes nets)\n"
-            "2. Identifie les PATTERNS : quelles paires/sessions ont le mieux fonctionne ?\n"
-            "3. Donne 2-3 ENSEIGNEMENTS cles tires de ces trades\n"
-            "4. Propose 1 RECOMMANDATION concrete pour demain\n\n"
-            "Format: texte HTML Telegram (<b>bold</b>, <i>italic</i>)\n"
-            "Sois concis, professionnel, factuel. Maximum 400 mots.\n"
-            "Commence directement par l'analyse sans preambule."
-        )
-
-        client = _anthropic_sdk.Anthropic(api_key=CLAUDE_API_KEY)
-        resp = client.messages.create(
-            model=CLAUDE_MODEL, max_tokens=800,
-            messages=[{"role": "user", "content": prompt}])
-        return resp.content[0].text.strip()
-    except Exception as e:
-        _LAI.error("Claude rapport: {}".format(e))
-        return None
-
-
-def _get_live_price(pair_name):
-    """Récupère le prix actuel d'une paire via Yahoo Finance."""
-    mkt = next((m for m in MARKETS if m["name"] == pair_name), None)
-    if not mkt: return None
-    try:
-        c = fetch_c(mkt["sym"], "5m", "1d")
-        if c and len(c) >= 1:
-            return c[-1]["c"], c
-    except: pass
-    return None, None
-
-
-def _signal_still_valid(sig, current_price):
-    """
-    Vérifie si le signal est encore valide :
-    - Prix n'a pas touché SL
-    - Prix n'a pas dépassé TP
-    - Signal < 4h (sinon expiré)
-    """
-    side  = sig.get("side","BUY")
-    entry = float(sig.get("entry", 0))
-    tp    = float(sig.get("tp", 0))
-    sl    = float(sig.get("sl", 0))
-    price = float(current_price)
-
-    if side == "BUY":
-        if price <= sl:   return "SL_HIT",  "❌ SL touché — signal invalidé"
-        if price >= tp:   return "TP_HIT",  "✅ TP atteint — signal terminé"
-        if price < entry: return "VALID_PULLBACK", "✅ Valide — prix en pullback vers entrée"
-        return "VALID_RUNNING", "🟢 En cours — prix au-dessus de l'entrée"
-    else:  # SELL
-        if price >= sl:   return "SL_HIT",  "❌ SL touché — signal invalidé"
-        if price <= tp:   return "TP_HIT",  "✅ TP atteint — signal terminé"
-        if price > entry: return "VALID_PULLBACK", "✅ Valide — prix en pullback vers entrée"
-        return "VALID_RUNNING", "🟢 En cours — prix en dessous de l'entrée"
-
-
-def _adjust_entry_sl(sig, candles, current_price):
-    """
-    Recalcule l'entrée et le SL optimaux selon le prix actuel.
-    Ne change PAS le TP (objectif institutionnel).
-    """
-    side  = sig.get("side","BUY")
-    pip   = sig.get("pip", 0.0001)
-    a     = atr(candles) if candles and len(candles) >= 14 else None
-    entry = float(current_price)
-
-    if a:
-        if side == "BUY":
-            new_sl = round(entry - a * 1.2, 5)
-        else:
-            new_sl = round(entry + a * 1.2, 5)
-    else:
-        # Fallback : garder distance SL originale
-        orig_dist = abs(float(sig.get("entry",0)) - float(sig.get("sl",0)))
-        new_sl = round(entry - orig_dist, 5) if side=="BUY" else round(entry + orig_dist, 5)
-
-    return round(entry, 5), new_sl
-
-
-def handle_check_signal(uid, pair_side_key):
-    """
-    Handler bouton 'Vérifier signal'.
-    Récupère le prix live, analyse la validité, propose nouvelle entrée/SL si valide.
-    """
-    with _ACTIVE_SIGNALS_LOCK:
-        sig = _ACTIVE_SIGNALS.get(pair_side_key)
-    if not sig:
-        tg_send(uid, "⏳ <b>Signal expiré ou introuvable.</b>\n\nLe signal n'est plus en mémoire (>4h).")
-        return
-
-    pair  = sig.get("name","?")
-    side  = sig.get("side","BUY")
-    entry = sig.get("entry","?")
-    tp    = sig.get("tp","?")
-    sl    = sig.get("sl","?")
-    rr    = sig.get("rr","?")
-    sc    = sig.get("score", 0)
-    tg_send(uid, "🔄 <b>Vérification en cours...</b>\n📡 Récupération prix live {}...".format(pair))
-
-    result = _get_live_price(pair)
-    current, candles = result if isinstance(result, tuple) else (result, None)
-    if not current:
-        tg_send(uid, "❌ <b>Prix indisponible</b>\n\nImpossible de récupérer le prix live de {}.\nRéessaie dans quelques secondes.".format(pair), kb=kb_back())
-        return
-
-    status, status_msg = _signal_still_valid(sig, current)
-    is_valid = status in ("VALID_PULLBACK", "VALID_RUNNING")
-    d = "⬆️" if side=="BUY" else "⬇️"
-    sf = "ACHAT" if side=="BUY" else "VENTE"
-
-    dp = 2 if float(current) > 100 else (3 if float(current) > 10 else 5)
-    fmt_p = "{{:.{}f}}".format(dp)
-    current_fmt = fmt_p.format(float(current))
-
-    if is_valid and candles:
-        new_entry, new_sl = _adjust_entry_sl(sig, candles, current)
-        new_entry_fmt = fmt_p.format(new_entry)
-        new_sl_fmt    = fmt_p.format(new_sl)
-        new_dist = abs(new_entry - float(tp))
-        sl_dist  = abs(new_entry - new_sl)
-        new_rr   = round(new_dist / sl_dist, 1) if sl_dist > 0 else rr
-
-        msg = (
-            "🔍 <b>VÉRIFICATION SIGNAL — {}</b>\n".format(pair) +
-            "═"*22 + "\n\n" +
-            "{} {} <b>{}</b>\n\n".format(d, sf, pair) +
-            "━"*20 + "\n" +
-            "<b>SIGNAL ORIGINAL</b>\n" +
-            "  📍 Entrée : <code>{}</code>\n".format(entry) +
-            "  ✅ TP     : <code>{}</code>\n".format(tp) +
-            "  ❌ SL     : <code>{}</code>\n".format(sl) +
-            "  📐 RR     : 1:{}\n\n".format(rr) +
-            "━"*20 + "\n" +
-            "📊 <b>STATUT LIVE</b>\n" +
-            "  💹 Prix actuel : <code>{}</code>\n".format(current_fmt) +
-            "  {}\n\n".format(status_msg) +
-            "━"*20 + "\n" +
-            "⚡ <b>MISE À JOUR RECOMMANDÉE</b>\n" +
-            "  📍 Nouvelle entrée : <code>{}</code>\n".format(new_entry_fmt) +
-            "  ✅ TP (inchangé)   : <code>{}</code>\n".format(tp) +
-            "  ❌ Nouveau SL      : <code>{}</code>\n".format(new_sl_fmt) +
-            "  📐 Nouveau RR      : 1:{}\n\n".format(new_rr) +
-            "═"*22 + "\n" +
-            "🎯 Score signal : <b>{}/100</b>\n".format(sc) +
-            "⚠️ Not financial advice · @leaderodg_bot"
-        )
-        kb = {"inline_keyboard": [[
-            {"text": "🔄 Actualiser", "callback_data": "check_sig_{}".format(pair_side_key)},
-            {"text": "◀️ Retour",     "callback_data": "start"},
-        ]]}
-    elif status == "SL_HIT":
-        msg = (
-            "🔍 <b>VÉRIFICATION — {}</b>\n".format(pair) +
-            "═"*22 + "\n\n" +
-            "❌ <b>SIGNAL INVALIDÉ</b>\n\n" +
-            "  {} {} <b>{}</b>\n".format(d, sf, pair) +
-            "  💹 Prix actuel : <code>{}</code>\n".format(current_fmt) +
-            "  🛑 SL original : <code>{}</code>\n\n".format(sl) +
-            "  {} \n\n".format(status_msg) +
-            "⏳ Attends le prochain scan pour un nouveau setup."
-        )
-        kb = kb_back()
-        # Supprimer du store
-        with _ACTIVE_SIGNALS_LOCK:
-            _ACTIVE_SIGNALS.pop(pair_side_key, None)
-    elif status == "TP_HIT":
-        dist = abs(float(tp) - float(entry))
-        sl_d = abs(float(entry) - float(sl))
-        rr_real = round(dist/sl_d, 1) if sl_d > 0 else rr
-        msg = (
-            "🔍 <b>VÉRIFICATION — {}</b>\n".format(pair) +
-            "═"*22 + "\n\n" +
-            "✅ <b>TP ATTEINT !</b> 🎉\n\n" +
-            "  {} {} <b>{}</b>\n".format(d, sf, pair) +
-            "  💹 Prix actuel : <code>{}</code>\n".format(current_fmt) +
-            "  🎯 TP original : <code>{}</code>\n".format(tp) +
-            "  📐 RR réalisé  : 1:{}\n\n".format(rr_real) +
-            "  {} \n\n".format(status_msg) +
-            "🏆 Excellent trade !"
-        )
-        kb = kb_back()
-        with _ACTIVE_SIGNALS_LOCK:
-            _ACTIVE_SIGNALS.pop(pair_side_key, None)
-    else:
-        msg = (
-            "🔍 <b>VÉRIFICATION — {}</b>\n".format(pair) +
-            "  💹 Prix actuel : <code>{}</code>\n".format(current_fmt) +
-            "  {}\n\n".format(status_msg) +
-            "  📍 Entrée: <code>{}</code>  TP: <code>{}</code>  SL: <code>{}</code>".format(entry, tp, sl)
-        )
-        kb = {"inline_keyboard": [[
-            {"text": "🔄 Actualiser", "callback_data": "check_sig_{}".format(pair_side_key)},
-            {"text": "◀️ Retour",     "callback_data": "start"},
-        ]]}
-
-    tg_send(uid, msg, kb=kb)
-
-
-
 def dispatch_cb(cb):
     """Gère tous les boutons inline Telegram."""
     uid   = cb["from"]["id"]
@@ -7027,11 +6491,50 @@ def dispatch_cb(cb):
         except Exception as _e:
             log("WARN", "PM.process_callback: {}".format(_e))
 
-    # ── Vérification validité signal (bouton signal) ─────────────────
-    if data.startswith("recheck_") or data.startswith("check_sig_"):
-        key_part = data.replace("recheck_","",1).replace("check_sig_","",1)
-        threading.Thread(target=handle_check_signal,
-                         args=(uid, key_part), daemon=True).start()
+    # ── Vérification validité signal (recheck) ────────────────────────
+    if data.startswith("recheck_"):
+        sig_id = data[len("recheck_"):]
+        try:
+            row = db_one(
+                "SELECT pair,side,entry,tp,sl,score FROM signals ORDER BY sent_at DESC LIMIT 1",
+                ())
+            if not row:
+                tg_edit(uid, mid, "⚠️ Signal introuvable."); return
+            pair, side, entry, tp, sl, score = row
+            m_obj = next((x for x in MARKETS if x["name"]==pair), None)
+            current = None
+            if m_obj:
+                try:
+                    candles = fetch_c(m_obj["sym"], "5m", "1d")
+                    if candles: current = float(candles[-1]["close"])
+                except: pass
+            if current is None:
+                tg_edit(uid, mid, "⚠️ Prix actuel indisponible."); return
+            entry_f = float(entry); tp_f = float(tp); sl_f = float(sl)
+            if side == "BUY":
+                still_valid = current >= entry_f * 0.997 and current < tp_f
+                near_sl     = current <= sl_f * 1.002
+            else:
+                still_valid = current <= entry_f * 1.003 and current > tp_f
+                near_sl     = current >= sl_f * 0.998
+            if near_sl:
+                msg = "🔴 <b>Signal invalidé</b> — prix trop proche du Stop Loss\n💡 Ne pas entrer."
+            elif still_valid:
+                new_e = round(current * 1.0002 if side=="BUY" else current * 0.9998, 5)
+                msg = (
+                    "✅ <b>Signal toujours valide !</b>\n\n"
+                    "📊 <b>{}</b> — {}\n"
+                    "💰 Prix actuel : <b>{}</b>\n\n"
+                    "📍 Nouveau point d'entrée : <code>{}</code>\n"
+                    "🎯 TP maintenu : <code>{}</code>\n"
+                    "🛑 SL rapide : <code>{}</code>"
+                ).format(pair, side, round(current,5), new_e, round(tp_f,5), round(sl_f,5))
+            else:
+                msg = "⏳ <b>Signal expiré</b> — le prix a quitté la zone d'entrée."
+            tg_edit(uid, mid, msg,
+                    kb={"inline_keyboard": [[{"text":"◀️ Menu","callback_data":"start"}]]})
+        except Exception as e:
+            tg_edit(uid, mid, "❌ Erreur recheck: {}".format(e))
         return
 
     # ── Navigation principale ─────────────────────────────────
