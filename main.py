@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """
 AlphaBot PRO v18 — Agent IA Adaptatif
@@ -399,8 +398,8 @@ def gemini_scan_signal(sig: dict, session: str) -> dict:
     """
     fail = {"approved": False, "score_setup": 0, "raison": "Gemini indisponible"}
     if not _GEMINI_OK or not GEMINI_API_KEY:
-        _LAI.warning("Gemini scan: SDK ou clé absente")
-        return fail
+        _LAI.warning("Gemini scan: SDK ou clé absente — approuvé par défaut")
+        return {"approved": True, "score_setup": 5, "raison": "Gemini indispo — bypass"}
     prompt = _gemini_build_scan_prompt(sig, session)
     parsed = _gemini_call(prompt)
     if not parsed:
@@ -440,14 +439,14 @@ def claude_validate_signal(sig: dict, session: str, htf_trend: str) -> dict:
     claude_ready = _ANTHROPIC_OK and bool(CLAUDE_API_KEY)
     gemini_ready = _GEMINI_OK and bool(GEMINI_API_KEY)
     if mode == "claude" and not claude_ready:
-        _LAI.warning("Mode claude mais SDK/clé Claude absent — validation ignorée")
-        return fail
+        _LAI.warning("Mode claude mais SDK/clé Claude absent — signal accepté par défaut")
+        return {**fail, "validated": True, "verdict": "VALIDER", "raison": "IA indispo — algo seul", "final_score": float(sig.get("score",0))}
     if mode == "gemini" and not gemini_ready:
-        _LAI.warning("Mode gemini mais SDK/clé Gemini absent — validation ignorée")
-        return fail
+        _LAI.warning("Mode gemini mais SDK/clé Gemini absent — signal accepté par défaut")
+        return {**fail, "validated": True, "verdict": "VALIDER", "raison": "IA indispo — algo seul", "final_score": float(sig.get("score",0))}
     if mode in ("auto", "both") and not claude_ready and not gemini_ready:
-        _LAI.warning("Aucune IA disponible (claude+gemini) — validation ignorée")
-        return fail
+        _LAI.warning("Aucune IA disponible — signal accepté par algo seul")
+        return {**fail, "validated": True, "verdict": "VALIDER", "raison": "IA indispo — algo seul", "final_score": float(sig.get("score",0))}
 
     cache_key = "{}-{}-{}-{}".format(
         sig.get("name"), sig.get("side"), sig.get("entry"), session)
@@ -1254,6 +1253,40 @@ def _conn():
         return con
 
 # ── Fin patch ──────────────────────────────────────────────────────────────────
+
+# ── Migration DB : colonnes manquantes (auto au démarrage) ────────────────────
+def _db_migrate():
+    try:
+        con = _conn(); cur = con.cursor()
+        for col, typ in [
+            ("ref_count",    "INTEGER DEFAULT 0"),
+            ("ref_bonus",    "INTEGER DEFAULT 0"),
+            ("ref_by",       "INTEGER DEFAULT NULL"),
+            ("trial_used",   "INTEGER DEFAULT 0"),
+        ]:
+            try:
+                cur.execute("ALTER TABLE users ADD COLUMN {} {}".format(col, typ))
+                con.commit()
+                log("INFO", clr("Migration DB: colonne '{}' ajoutée ✅".format(col), "g"))
+            except Exception: pass
+        # start_bal dans challenge
+        try:
+            cur.execute("ALTER TABLE challenge ADD COLUMN start_bal REAL DEFAULT {}".format(CHALLENGE_START))
+            con.commit()
+            log("INFO", clr("Migration DB: start_bal ajouté ✅", "g"))
+        except Exception: pass
+        # signal_sent table (anti-doublon)
+        try:
+            cur.execute("""CREATE TABLE IF NOT EXISTS signal_sent (
+                user_id INTEGER, sig_key TEXT,
+                sent_at TEXT, PRIMARY KEY(user_id, sig_key))""")
+            con.commit()
+        except Exception: pass
+        con.close()
+    except Exception as _me:
+        log("WARN", "Migration DB erreur: {}".format(_me))
+_db_migrate()
+# ── Fin migration ─────────────────────────────────────────────────────────────
 
 def setup_key(sig):
     """
@@ -2473,7 +2506,7 @@ def ai_check():
             if result=="WIN": tg_send(CHANNEL_ID,"<b>✅ WIN IA #{} — {}</b>\n+{:.4f}$ RR:{:.2f}\nSolde:{:.4f}$\n<b>@leaderOdg</b>".format(t["id"],t["symbol"],net,rrc,ch["balance"]))
 
 def chal_prog(c):
-    bal=c["balance"]; start=c["start_bal"]; target=start*100
+    bal=c["balance"]; start=c.get("start_bal", c.get("balance", CHALLENGE_START)); target=start*100
     prog=min(100,bal/target*100) if target>0 else 0
     bar="█"*int(prog/5)+"░"*(20-int(prog/5))
     return "[{}] {:.1f}%\n{:.4f}$ → {:.0f}$".format(bar,prog,bal,target)
@@ -4807,10 +4840,13 @@ def db_get_pro_users():
 
 
 def db_get_refs(uid):
-    con = _conn(); cur = con.cursor()
-    cur.execute("SELECT ref_count FROM users WHERE user_id=?", (uid,))
-    row = cur.fetchone(); con.close()
-    return row[0] if row else 0
+    try:
+        con = _conn(); cur = con.cursor()
+        cur.execute("SELECT ref_count FROM users WHERE user_id=?", (uid,))
+        row = cur.fetchone(); con.close()
+        return row[0] if row else 0
+    except Exception:
+        return 0
 
 
 def db_global_stats():
@@ -8314,6 +8350,11 @@ def main():
         db_init()
         db_register(ADMIN_ID, "leaderOdg")
         db_pro(ADMIN_ID, "ADMIN_AUTO", days=None)
+        # Garantir start_bal dans le challenge
+        ch = chal_get()
+        if "start_bal" not in ch:
+            ch["start_bal"] = ch.get("balance", CHALLENGE_START)
+            chal_save(ch)
         log("INFO", clr("DB OK", "b", "g"))
 
         # ── ÉTAPE 2 : Ouvrir le port HTTP (Render détecte ici) ───
@@ -8389,6 +8430,10 @@ def main():
         db_init()
         db_register(ADMIN_ID, "leaderOdg")
         db_pro(ADMIN_ID, "ADMIN_AUTO", days=None)
+        ch = chal_get()
+        if "start_bal" not in ch:
+            ch["start_bal"] = ch.get("balance", CHALLENGE_START)
+            chal_save(ch)
         threading.Thread(target=refresh_exch, daemon=True).start()
         threading.Thread(target=refresh_ai, daemon=True).start()
         tg_req("deleteWebhook",{"drop_pending_updates":"true"}); time.sleep(1)
@@ -8421,3 +8466,5 @@ def main():
 
 if __name__=="__main__":
     main()
+
+
