@@ -1441,7 +1441,60 @@ def sess_bonus(sn):
 # ══════════════════════════════════════════════════════
 #  FETCH DONNÉES YAHOO
 # ══════════════════════════════════════════════════════
+# ── Mapping periode Yahoo -> limit Binance ────────────────────────────
+_BINANCE_LIMIT = {
+    "1m" : {"1d":400,  "2d":600},
+    "5m" : {"1d":200,  "2d":300,  "3d":500},
+    "15m": {"3d":200,  "5d":300,  "10d":400},
+    "1h" : {"7d":168,  "10d":240, "30d":480, "60d":960},
+    "4h" : {"10d":60,  "30d":180, "60d":360},
+}
+# Symboles Yahoo -> Binance (cryptos uniquement)
+_BINANCE_SYM = {
+    "BTC-USD": "BTCUSDT",
+    "ETH-USD": "ETHUSDT",
+    "SOL-USD": "SOLUSDT",
+    "BNB-USD": "BNBUSDT",
+    "XRP-USD": "XRPUSDT",
+}
+
+def _fetch_binance(symbol_bn, interval, period):
+    try:
+        limit = _BINANCE_LIMIT.get(interval, {}).get(period, 300)
+        limit = min(limit, 1000)
+        url = "https://api.binance.com/api/v3/klines?symbol={}&interval={}&limit={}".format(
+            symbol_bn, interval, limit)
+        body = json.loads(http_get(url, timeout=15))
+        if not body or not isinstance(body, list):
+            return None
+        now_ms = time.time() * 1000
+        candles = []
+        for k in body:
+            try:
+                o, h, l, cv = float(k[1]), float(k[2]), float(k[3]), float(k[4])
+                if o > 0:
+                    candles.append({"o": o, "h": h, "l": l, "c": cv})
+            except:
+                continue
+        if body and (now_ms - float(body[-1][6])) / 60000 > DATA_MAX_AGE:
+            log("WARN", clr("Binance {} {} trop vieux".format(symbol_bn, interval), "y"))
+            return None
+        if len(candles) >= 10:
+            log("INFO", clr("Binance {} {} -> {} bougies OK".format(symbol_bn, interval, len(candles)), "d"))
+            return candles
+    except Exception as e:
+        log("WARN", "Binance fetch {}: {}".format(symbol_bn, e))
+    return None
+
 def fetch_c(sym, interval, period):
+    # Cryptos : Binance en priorite (prix reels, fiables, 24/7)
+    bn_sym = _BINANCE_SYM.get(sym)
+    if bn_sym:
+        result = _fetch_binance(bn_sym, interval, period)
+        if result:
+            return result
+        log("WARN", clr("Binance indispo pour {} - fallback Yahoo".format(sym), "y"))
+    # Forex / Metaux / Indices : Yahoo Finance
     sym_e=urllib.parse.quote(sym)
     for base in ["https://query1.finance.yahoo.com","https://query2.finance.yahoo.com"]:
         try:
@@ -1451,7 +1504,7 @@ def fetch_c(sym, interval, period):
             if not res: continue
             ts=res[0].get("timestamp",[])
             if ts and (time.time()-ts[-1])/60>DATA_MAX_AGE:
-                log("WARN",clr("{} {} trop vieux — ignoré".format(sym,interval),"y")); return None
+                log("WARN",clr("{} {} trop vieux - ignore".format(sym,interval),"y")); return None
             q=res[0]["indicators"]["quote"][0]
             c=[{"o":float(o),"h":float(h),"l":float(l),"c":float(cv)}
                for o,h,l,cv in zip(q.get("open",[]),q.get("high",[]),q.get("low",[]),q.get("close",[]))
@@ -1665,7 +1718,7 @@ def displacement_check(c, bias, atr_val=None):
 
     for i, candle in enumerate(scan):
         body = abs(candle["c"] - candle["o"])
-        if body < atr_val * 1.2:
+        if body < atr_val * 1.0:
             continue  # trop petite
 
         if bias == "BULLISH":
@@ -2097,6 +2150,11 @@ def agent_analyze(m, score_min, news_ok, q):
         fund_adj, fund_badge = fundamental_score_adj(m["name"], b)
         if fund_adj != 0:
             sc = min(max(0, sc + fund_adj), 115)
+        # Variables fondamentales pour le prompt IA (bs/qs/fund)
+        try:
+            bs, qs, fund, _fb = fundamental_bias(m["name"])
+        except Exception:
+            bs, qs, fund = 0, 0, "NEUTRAL" 
 
         # ── M5 : TIMEFRAME D'ENTRÉE (nouveau v11) ─────────────────
         # Charge M5 une seule fois — utilisé pour patterns ET entrée
@@ -2222,7 +2280,7 @@ def agent_analyze(m, score_min, news_ok, q):
 
         a     = atr(m15)
         a_pct = a / (lp + 0.0001)
-        s_min = score_min + (m.get("vol", 3) - 3) * 2
+        s_min = score_min + (m.get("vol", 3) - 3) * 1  # FIX: facteur 1 (était 2)
 
         # ── Priorité paire ────────────────────────────────────────
         prio = MARKET_PRIORITY.get(m["name"], 0)
@@ -2231,16 +2289,16 @@ def agent_analyze(m, score_min, news_ok, q):
 
         sig = None
 
-        # ── Displacement ICT (bonus fort — confirme mouvement institutionnel) ──
+        # ── Displacement ICT (badge informatif + petit bonus) ──────
         displ_ok, displ_str = displacement_check(m15, b, a)
         if displ_ok:
-            sc = min(sc + 18, 115)
+            sc = min(sc + 8, 115)   # bonus léger — signal passe sans displacement
         elif m5_raw and len(m5_raw) >= 5:
             displ_ok_m5, displ_str_m5 = displacement_check(m5_raw, b)
             if displ_ok_m5:
                 displ_ok = True
                 displ_str = displ_str_m5
-                sc = min(sc + 12, 115)
+                sc = min(sc + 5, 115)
 
         # ── Construction signal — OB M15 obligatoire ─────────────
         if bbs and sc >= s_min and (news_ok or sc >= s_min + 5):
