@@ -238,17 +238,32 @@ Jour        : {day_ok_str}
 TP1 distance: {tp1_dist_pct:.3f}% de l'entrée
 Volatilité  : ATR = {atr} (~{candles} bougies M15)
 
-══ RÈGLE DE VALIDATION ════════════════════════════════
-VALIDER si TOUS ces points sont verts :
-  ✅ Score algo ≥ 58/100
-  ✅ RR ≥ 2.0
-  ✅ Biais HTF aligné avec le trade
-  ✅ Fondamentaux alignés ou neutres (pas CONTRE)
-  ✅ Aucune news bloquante dans les 2h
-  ✅ Heure et jour favorables
-  ✅ TP1 atteignable dans la session (<4h estimé)
+══ ANALYSE TECHNIQUE DÉTAILLÉE ════════════════════════
+Vérifie ces 6 confirmations :
+  1. Biais H1 confirmé ? (EMA20/50, HH-HL ou LL-LH, CHoCH)
+  2. Order Block M15 présent et non mitigé ?
+  3. FVG M15 actif dans la direction ?
+  4. Confirmation M5 alignée ? (biais + structure LTF)
+  5. Entrée sur zone OTE / discount (BUY) ou premium (SELL) ?
+  6. RR ≥ 2.0 réel calculé sur ce setup ?
 
-REJETER si l'un de ces points est rouge.
+══ ANALYSE FONDAMENTALE DÉTAILLÉE ════════════════════
+  A. Quelle devise est la plus forte fondamentalement ?
+  B. Le biais macro est-il aligné avec la direction du trade ?
+  C. Y a-t-il des événements économiques à fort impact dans 4h ?
+  D. La corrélation DXY / matières premières confirme-t-elle ?
+
+══ RÈGLE DE VALIDATION ════════════════════════════════
+VALIDER si :
+  ✅ Score algo ≥ 65/100
+  ✅ RR ≥ 2.0
+  ✅ Biais HTF aligné (H1 + M15 cohérents)
+  ✅ Fondamentaux ALIGNE ou NEUTRE (jamais CONTRE)
+  ✅ Aucune news BLOQUANTE dans les 2h
+  ✅ Au moins 3 confirmations techniques sur 6
+
+REJETER UNIQUEMENT si : fondamentaux CONTRE le trade OU news BLOQUANT.
+Pour tout le reste → VALIDER avec note de risque.
 
 Réponds UNIQUEMENT avec ce JSON exact :
 {{
@@ -258,8 +273,10 @@ Réponds UNIQUEMENT avec ce JSON exact :
   "biais_fondamental": "ALIGNE" ou "NEUTRE" ou "CONTRE",
   "timing_ok": true ou false,
   "tp_atteignable": true ou false,
-  "raison": "<explication 1-2 phrases>",
-  "risque_principal": "<le risque #1 en une phrase>"
+  "confirmations_tech": 0,
+  "raison": "<analyse technique ET fondamentale — 2-3 phrases>",
+  "risque_principal": "<le risque #1>",
+  "conseil_entree": "<timing ou point d entree optimal>"
 }}""".format(
         pair=pair_name, cat=cat, side=side_fr, session=session, htf=htf_trend,
         entry=entry, sl=sl_v, tp=tp, rr=rr, tp2=tp2, tp3=tp3,
@@ -506,12 +523,13 @@ def claude_validate_signal(sig: dict, session: str, htf_trend: str) -> dict:
 
     # Compatibilité champs anciens (pour fmt_ai_block)
     ai_score   = 8.0 if verdict == "VALIDER" else 4.0
-    ai_proba   = 70.0 if verdict == "VALIDER" else 30.0
+    ai_proba   = 75.0 if verdict == "VALIDER" else 30.0
     confiance  = "HAUTE" if verdict == "VALIDER" else "FAIBLE"
     tp_rec     = 1
     sl_opt     = None
-    criteres   = 0
-    conseil    = ""
+    # Récupérer les confirmations techniques détaillées
+    criteres   = int(parsed.get("confirmations_tech", 8 if verdict == "VALIDER" else 4))
+    conseil    = parsed.get("conseil_entree", "")
     algo_sc    = float(sig.get("score", 0))
     final_sc   = round(algo_sc, 1)   # score algo seul, Claude ne rescore plus
 
@@ -1626,6 +1644,50 @@ def fvg(c,bias,look=40):
                 if best is None or sz>(best[1]-best[0]): best=(fl2,fh2)
     return best
 
+
+def displacement_check(c, bias, atr_val=None):
+    """
+    Détecte une bougie de displacement institutionnel :
+    - Corps > 1.5× ATR moyen
+    - Fermeture dans la direction du bias
+    - Clôture au-delà du high/low des 3 bougies précédentes
+    C'est la signature d'un mouvement institutionnel — confirmation ICT #1.
+    """
+    if len(c) < 10: return False, 0
+    if atr_val is None or atr_val == 0:
+        atr_val = atr(c)
+    if atr_val == 0: return False, 0
+
+    # Chercher dans les 5 dernières bougies
+    scan = c[-6:-1] if len(c) >= 6 else c[:-1]
+    best_strength = 0
+    found = False
+
+    for i, candle in enumerate(scan):
+        body = abs(candle["c"] - candle["o"])
+        if body < atr_val * 1.2:
+            continue  # trop petite
+
+        if bias == "BULLISH":
+            if candle["c"] <= candle["o"]: continue  # doit être haussière
+            # Clôture au-delà des 3 bougies précédentes
+            prev_highs = [scan[j]["h"] for j in range(max(0, i-3), i)]
+            if prev_highs and candle["c"] > max(prev_highs):
+                strength = body / atr_val
+                if strength > best_strength:
+                    best_strength = strength
+                    found = True
+        else:
+            if candle["c"] >= candle["o"]: continue  # doit être baissière
+            prev_lows = [scan[j]["l"] for j in range(max(0, i-3), i)]
+            if prev_lows and candle["c"] < min(prev_lows):
+                strength = body / atr_val
+                if strength > best_strength:
+                    best_strength = strength
+                    found = True
+
+    return found, round(best_strength, 2)
+
 def ote_zone(sh,sl,bias):
     rng=sh-sl
     if rng<=0: return None,None
@@ -2169,15 +2231,42 @@ def agent_analyze(m, score_min, news_ok, q):
 
         sig = None
 
+        # ── Displacement ICT (bonus fort — confirme mouvement institutionnel) ──
+        displ_ok, displ_str = displacement_check(m15, b, a)
+        if displ_ok:
+            sc = min(sc + 18, 115)
+        elif m5_raw and len(m5_raw) >= 5:
+            displ_ok_m5, displ_str_m5 = displacement_check(m5_raw, b)
+            if displ_ok_m5:
+                displ_ok = True
+                displ_str = displ_str_m5
+                sc = min(sc + 12, 115)
+
         # ── Construction signal — OB M15 obligatoire ─────────────
         if bbs and sc >= s_min and (news_ok or sc >= s_min + 5):
             bb   = bbs[0]
-            e    = lp
+
+            # ── Entrée optimisée : OTE 70.5% quand possible ─────
+            if in_ote and ote_lo and ote_hi:
+                # OTE midpoint = 70.5% du range (niveau institutionnel précis)
+                ote_mid = (ote_lo + ote_hi) / 2
+                # Utiliser OTE mid seulement si le prix n'est pas déjà passé
+                if b == "BULLISH" and ote_mid < lp:
+                    e = ote_mid   # attente du pullback vers OTE
+                elif b == "BEARISH" and ote_mid > lp:
+                    e = ote_mid
+                else:
+                    e = lp
+            else:
+                e = lp
+
             sp_p = sp * m["pip"]   # spread en prix (utilisé pour TP net)
             eq_h, eq_l = eqh_eql(m15)
 
             # Construire les badges finaux (ordre logique : HTF → LTF)
             all_badges = [liq["label"]]
+            if displ_ok:
+                all_badges.append("DISPL×{:.1f} ✓".format(displ_str))
             if in_ote:              all_badges.append("OTE ✓")
             if fvg_z:               all_badges.append("FVG M15 ✓")
             if cc2 >= 2:            all_badges.append("CHoCHx{} H1 ✓".format(cc2))
@@ -2208,8 +2297,13 @@ def agent_analyze(m, score_min, news_ok, q):
                 sl_p = f(sl_p)
                 risk = e - sl_p
                 if risk > 0 and risk <= a * 12:
-                    tp_eq = (eq_h * 0.9995) if (eq_h and e < eq_h < e + risk * 6) else None
-                    tp    = tp_eq if tp_eq else e + risk * 3.0
+                    # TP : liquidity pool (EQH) en priorité → institutionnel
+                    if eq_h and e < eq_h < e + risk * 8:
+                        tp_eq = eq_h * 0.9990   # just sous le pool de liquidité
+                        tp_rr = (tp_eq - e) / risk if risk > 0 else 0
+                        tp    = tp_eq if tp_rr >= 2.0 else e + risk * 3.0
+                    else:
+                        tp    = e + risk * 3.0
                     gain_net = abs(tp - e) - sp_p
                     rr   = round(gain_net / (risk + sp_p), 1) if (risk + sp_p) > 0 else 0
                     if rr >= rr_min:
@@ -2244,8 +2338,13 @@ def agent_analyze(m, score_min, news_ok, q):
                 sl_p = f(sl_p)
                 risk = sl_p - e
                 if risk > 0 and risk <= a * 12:
-                    tp_eq = (eq_l * 1.0005) if (eq_l and e - risk * 6 < eq_l < e) else None
-                    tp    = tp_eq if tp_eq else e - risk * 3.0
+                    # TP : liquidity pool (EQL) en priorité → institutionnel
+                    if eq_l and e - risk * 8 < eq_l < e:
+                        tp_eq = eq_l * 1.0010   # just au-dessus du pool de liquidité
+                        tp_rr = (e - tp_eq) / risk if risk > 0 else 0
+                        tp    = tp_eq if tp_rr >= 2.0 else e - risk * 3.0
+                    else:
+                        tp    = e - risk * 3.0
                     gain_net = abs(tp - e) - sp_p
                     rr   = round(gain_net / (risk + sp_p), 1) if (risk + sp_p) > 0 else 0
                     if rr >= rr_min:
@@ -2283,6 +2382,8 @@ def agent_analyze(m, score_min, news_ok, q):
                 reason = "No OB M15"
             elif not m5_conf["ok"]:
                 reason = "M5 non aligné ({})".format(m5_conf["details"])
+            elif not displ_ok:
+                reason = "Pas de displacement M15/M5 — setup faible"
             else:
                 reason = "Score {}/{}".format(sc, s_min)
             q.put({"name": m["name"], "cat": m["cat"], "found": False,
@@ -6084,44 +6185,36 @@ def score_min_for_market(m, base, atr_ratio):
 
 def get_adaptive_score_min():
     """
-    Score minimum intelligent :
-    - Kill Zone Londres/NY     → score min BAISSÉ  (meilleure session)
-    - Session hors marché/nuit → score min MONTÉ   (moins de setups)
-    - Week-end                 → score min MONTÉ   (crypto only, volatilité)
-    - Régime VOLATILE/CRISIS   → score min MONTÉ   (risque élevé)
-    - Régime TRENDING          → score min BAISSÉ  (tendance claire)
+    Score minimum fixé à 70 — v21 stable.
+    Suffisamment exigeant pour filtrer les mauvais setups,
+    assez bas pour laisser passer les bons signaux ICT/SMC.
     """
     sn, sm, sl, wknd = get_session()
     reg  = AI_REG.get("regime", "RANGING")
-    base = sm  # score de base de la session
 
-    # Ajustement selon la qualité de la session
     session_adj = {
-        "LONDON_KZ": -5,   # Kill Zone = meilleure probabilité
-        "OVERLAP":   -3,   # London+NY = très liquide
-        "NY_KZ":     -5,   # Kill Zone NY
-        "NY":        -2,   # NY normal
-        "LONDON":    -1,   # Londres normal
-        "ASIAN":     +5,   # Asie = moins fiable
-        "OFF":       +10,  # Hors session = éviter
-        "WEEKEND":   +8,   # Week-end = volatile
+        "LONDON_KZ": -3,
+        "OVERLAP":   -2,
+        "NY":        -1,
+        "LONDON":     0,
+        "ASIAN":     +3,
+        "OFF":       +5,
+        "WEEKEND":   +4,
     }.get(sn, 0)
 
-    # Ajustement selon le régime de marché
     regime_adj = {
-        "TRENDING_BULL": -3,  # Tendance claire → plus facile
-        "TRENDING_BEAR": -3,
-        "ACCUMULATION":  -1,
-        "RANGING":       +2,  # Range → plus de faux signaux
-        "VOLATILE":      +8,  # Volatile → exiger plus de confirmations
-        "CRISIS":        +20, # Crise → quasi stop
+        "TRENDING_BULL": -2,
+        "TRENDING_BEAR": -2,
+        "ACCUMULATION":   0,
+        "RANGING":       +2,
+        "VOLATILE":      +5,
+        "CRISIS":        +5,
     }.get(reg, 0)
 
-    final = base + session_adj + regime_adj
-    log("INFO", clr("Score min adaptatif: {} (base:{} sess:{:+d} regime:{:+d})".format(
-        final, base, session_adj, regime_adj), "d"))
-    # FIX v21 : seuil abaissé pour permettre les signaux (85-95 = trop restrictif)
-    return max(60, min(80, final))
+    final = 70 + session_adj + regime_adj
+    log("INFO", clr("Score min v21: {} (base:70 sess:{:+d} regime:{:+d})".format(
+        final, session_adj, regime_adj), "d"))
+    return max(65, min(78, final))  # plancher 65, plafond 78
 
 
 
