@@ -60,7 +60,7 @@ VIP_GROUP_LINK  = os.getenv("VIP_GROUP_LINK",  "https://t.me/+alphabotvip")    #
 #  MODULE CLAUDE AI — VALIDATEUR EXPERT ICT/SMC
 # ══════════════════════════════════════════════════════════════════════
 CLAUDE_API_KEY   = os.getenv("ANTHROPIC_API_KEY", "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")
-CLAUDE_MODEL     = "claude-sonnet-4-5"              # ✅ model string correct (Anthropic API 2025)
+CLAUDE_MODEL     = "claude-haiku-4-5-20251001"     # ✅ model string valide — rapide + économique
 CLAUDE_TOKENS    = 600
 GEMINI_API_KEY   = os.getenv("GEMINI_API_KEY", "")  # Optionnel — fallback auto
 GEMINI_MODEL     = "gemini-2.0-flash"
@@ -585,8 +585,20 @@ def claude_validate_signal(sig: dict, session: str, htf_trend: str) -> dict:
     elapsed = round(time.time() - t0, 2)
 
     if not parsed:
-        # ── Circuit-Breaker : bloquer au lieu de bypasser ─────────────
-        _cb_auto_reset()          # reset silencieux si timeout écoulé
+        # ── Circuit-Breaker : bloquer seulement si une IA était réellement disponible ──
+        _cb_auto_reset()
+        claude_ready = _ANTHROPIC_OK and bool(CLAUDE_API_KEY)
+        gemini_ready = _GEMINI_OK and bool(GEMINI_API_KEY)
+
+        if not claude_ready and not gemini_ready:
+            # Aucune IA configurée — bypass propre sans incrémenter le compteur
+            _LAI.warning("Aucune IA configurée — signal accepté par algo seul")
+            algo_sc = float(sig.get("score", 0))
+            return {**fail, "validated": True, "verdict": "VALIDER",
+                    "raison": "IA non configurée — algo seul",
+                    "final_score": algo_sc, "ai_source": "none"}
+
+        # Au moins une IA était disponible mais a échoué → incrémenter le compteur
         triggered = _cb_record_failure()
         if triggered:
             _LAI.warning(
