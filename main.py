@@ -2982,9 +2982,9 @@ def ai_scan_sym(sym, bias, bal):
     c15 = list(AI_C[sym].get("15m", deque()))
     if len(c5) < 12: return None
     ch = chal_get()
-    if ch["balance"] < FLOOR_USD: return None
-    dop = ch.get("day_open", ch["balance"])
-    if dop > 0 and (dop - ch["balance"]) / dop >= DD_LIMIT: return None
+    if not ch or ch.get("balance", 0) < FLOOR_USD: return None
+    dop = ch.get("day_open", ch.get("balance", 0))
+    if dop > 0 and (dop - ch.get("balance", 0)) / dop >= DD_LIMIT: return None
     sn, _, _, _ = get_session()
     if sn == "OFF": return None
     reg = AI_REG
@@ -3032,7 +3032,7 @@ def ai_scan_sym(sym, bias, bal):
         elif wr < 0.45: sc -= 12
     min_sc = reg.get("min_score", 72)
     if sc < min_sc: return None
-    risk = ai_risk(bal, sc, ch["am_cycle"], sn)
+    risk = ai_risk(bal, sc, ch.get("am_cycle", 0), sn)
     lev  = ai_lev(sym, bal, sc)
     lot  = lot_calc(sym, risk, sld, sig["entry"], lev)
     if not lot["qty"]: return None
@@ -3042,7 +3042,7 @@ def ai_scan_sym(sym, bias, bal):
         "risk":risk,"lev":lev,"qty":lot["qty"],"not":lot["not"],
         "ft":lot["ft"],"rr_real":lot["rr"],
         "strat":strat,"sess":sn,"regime":reg.get("regime","?"),
-        "am":ch["am_cycle"],
+        "am":ch.get("am_cycle", 0),
     }
 
 
@@ -3052,7 +3052,7 @@ def ai_full_scan():
     Couvre BTC, ETH + top altcoins USDT, triés par volume.
     """
     bias = ai_btc_bias()
-    ch   = chal_get(); bal = ch["balance"]
+    ch   = chal_get(); bal = ch.get("balance", 0.0)
     res  = []
     for sym in AI_PRS[:20]:
         s = ai_scan_sym(sym, bias, bal)
@@ -3065,7 +3065,7 @@ def ai_open(setup):
     """Ouvre une position Challenge IA simulée et notifie l'admin."""
     global AI_TC
     AI_TC += 1; tid = AI_TC; sym = setup["sym"]
-    ch  = chal_get(); bal = ch["balance"]
+    ch  = chal_get(); bal = ch.get("balance", 0.0)
     trade = {
         "id":tid,"symbol":sym,"side":setup["side"],
         "entry":setup["entry"],"sl":setup["sl"],"sl0":setup["sl"],
@@ -3080,8 +3080,7 @@ def ai_open(setup):
     with _ai_lk:
         AI_OT[tid] = trade
         AI_CD[sym]  = datetime.now(timezone.utc) + timedelta(minutes=COOLDOWN_MIN)
-    ch  = chal_get(); bal = ch["balance"]
-    d   = "🟢 LONG" if setup["side"] == "BUY" else "🔴 SHORT"
+    ch  = chal_get(); bal = ch.get("balance", 0.0)
     prog = chal_prog(ch)
     tg_send(ADMIN_ID,
         "<b>━━━ TRADE IA #{} ━━━</b>\n{} <b>{}</b>\n"
@@ -3153,13 +3152,13 @@ def ai_check():
                 od  = datetime.fromisoformat(t.get("open_ts", ""))
                 dur = "{}min".format(int((datetime.now(timezone.utc) - od).total_seconds() / 60))
             except: pass
-            am_old = ch["am_cycle"]
+            am_old = ch.get("am_cycle", 0)
             if result == "WIN":
                 ch["w_streak"] = ch.get("w_streak", 0) + 1; ch["l_streak"] = 0
-                ch["am_cycle"] = 0 if ch["w_streak"] >= AM_MAX else min(ch["am_cycle"] + 1, AM_MAX)
+                ch["am_cycle"] = 0 if ch["w_streak"] >= AM_MAX else min(ch.get("am_cycle", 0) + 1, AM_MAX)
             else:
                 ch["l_streak"] = ch.get("l_streak", 0) + 1; ch["am_cycle"] = 0; ch["w_streak"] = 0
-            ch["balance"]   = round(ch["balance"] + net, 4)
+            ch["balance"]   = round(ch.get("balance", 0.0) + net, 4)
             ch["today_pnl"] = round(ch.get("today_pnl", 0) + net, 4)
             if net > 0: ch["today_w"] = ch.get("today_w", 0) + 1
             else:       ch["today_l"] = ch.get("today_l", 0) + 1
@@ -3174,11 +3173,11 @@ def ai_check():
                 "💵 {:+.4f}$  Frais:-{:.5f}$\n"
                 "📐 RR:{:.2f}  ⏱{}\n🔄 AM:{}→{}\n{}\n<b>@leaderOdg</b>".format(
                     hdr, t["id"], "🟢" if side == "BUY" else "🔴", t["symbol"],
-                    entry, price, net, t["ft"], rrc, dur, am_old, ch["am_cycle"], chal_prog(ch)))
+                    entry, price, net, t.get("ft", 0), rrc, dur, am_old, ch.get("am_cycle", 0), chal_prog(ch)))
             if result == "WIN":
                 tg_send(CHANNEL_ID,
                     "<b>✅ WIN IA #{} — {}</b>\n+{:.4f}$ RR:{:.2f}\nSolde:{:.4f}$\n<b>@leaderOdg</b>".format(
-                        t["id"], t["symbol"], net, rrc, ch["balance"]))
+                        t["id"], t["symbol"], net, rrc, ch.get("balance", 0)))
 
 
 def chal_prog(c):
@@ -3501,7 +3500,7 @@ def fmt_scan(results, news, scan_t, sl_l, sm, nb):
             sl_l, sm, news_ico),
         # Ligne 2 : challenge IA + régime
         "🤖 IA : <b>{:.4f}$</b>  ·  Régime : <b>{}</b>".format(
-            ch["balance"], reg.get("regime", "?")),
+            ch.get("balance", 0.0), reg.get("regime", "?")),
         # Ligne 3 : stats du jour
         "📊 Aujourd'hui : <b>{}✅  {}❌  {}🔄</b>  ({} signaux)  💵 +${}".format(
             st["wins"], st["losses"], st.get("open", 0), st["n"], st["g1"]),
@@ -3850,20 +3849,24 @@ def _scan_inner():
 
         # ── Groupe FREE → teasing uniquement (aucun niveau) ─────────
         ref_admin = "https://t.me/{}?start={}".format(BOT_USER, ADMIN_ID)
+        _kb_free = {"inline_keyboard": [
+            [{"text": "💵 Payer 10$/mois",      "url": ref_admin}],
+            [{"text": "🤝 Parrainer 10 amis",   "url": ref_admin}],
+            [{"text": "📢 Partager ce groupe",   "url": FREE_GROUP_LINK},
+             {"text": "👑 Groupe VIP",           "url": VIP_GROUP_LINK}],
+        ]}
         if chart_img:
             r = tg_send_photo(CHANNEL_ID, chart_img, caption=msg_teasing[:1024])
+            if not r.get("ok"):  # photo invalide → fallback texte
+                r = tg_send(CHANNEL_ID, msg_teasing, kb=_kb_free)
         else:
-            r = tg_send(CHANNEL_ID, msg_teasing,
-                        kb={"inline_keyboard": [
-                            [{"text": "💵 Payer 10$/mois",      "url": ref_admin}],
-                            [{"text": "🤝 Parrainer 10 amis",   "url": ref_admin}],
-                            [{"text": "📢 Partager ce groupe",   "url": FREE_GROUP_LINK},
-                             {"text": "👑 Groupe VIP",           "url": VIP_GROUP_LINK}],
-                        ]})
+            r = tg_send(CHANNEL_ID, msg_teasing, kb=_kb_free)
 
         # ── Groupe VIP → 1 seul message : signal PRO complet ────────
         if chart_img:
-            tg_send_photo(VIP_CH, chart_img, caption=msg_p[:1024])
+            rv = tg_send_photo(VIP_CH, chart_img, caption=msg_p[:1024])
+            if not rv.get("ok"):
+                tg_send(VIP_CH, msg_p)
         else:
             tg_send(VIP_CH, msg_p)
 
@@ -3890,7 +3893,9 @@ def _scan_inner():
               "callback_data": "check_sig_{}".format(pair_side_key)}],
             [{"text": "◀️ Menu", "callback_data": "start"}],
         ]}
-        for uid in all_users():
+        for uid_row in all_users():
+            # all_users() peut retourner des dicts ou des int selon la DB
+            uid = uid_row["user_id"] if isinstance(uid_row, dict) else uid_row
             try:
                 pro = is_pro(uid)
                 c   = count_today(uid)
@@ -3947,10 +3952,12 @@ def _scan_inner():
                 # Groupe VIP : rapport complet PRO
                 tg_send(VIP_CH, d_pro)
                 # DM PRO
-                for puid in pru:
+                for puid_row in pro_users():
+                    puid = puid_row["user_id"] if isinstance(puid_row, dict) else puid_row
                     tg_send(puid, d_pro); time.sleep(0.04)
                 # DM FREE
-                for fuid in free_users():
+                for fuid_row in free_users():
+                    fuid = fuid_row["user_id"] if isinstance(fuid_row, dict) else fuid_row
                     tg_send(fuid, d_free); time.sleep(0.04)
                 mark_rep(st); _last_d = ds
     # Rapport hebdo (DM uniquement, pas dans les groupes)
@@ -3959,7 +3966,8 @@ def _scan_inner():
         ws = db_weekly_stats()
         if ws["n"] > 0:
             wmsg = "🏆 <b>RAPPORT HEBDO AlphaBot PRO</b>\n"+"═"*22+"\n\n📅 Semaine du {}\n\n💵 Lot 0.01: +${}\n💰 Lot 1.00: +${}\n\n📡 {} signaux  ·  {} wins  ·  {}%\n\n📩 @leaderodg_bot  ·  {}$ USDT".format(ws["ws"],ws["g001"],ws["g1"],ws["n"],ws["wins"],int(ws["wins"]/ws["n"]*100) if ws["n"] else 0,PRO_PRICE)
-            for puid in pru:
+            for puid_row in pro_users():
+                puid = puid_row["user_id"] if isinstance(puid_row, dict) else puid_row
                 tg_send(puid, wmsg); time.sleep(0.04)
             mark_rep(ws, "weekly_rep"); _last_w = wk
     # Expirations
@@ -8258,7 +8266,9 @@ def handle_check_signal(uid, pair_side_key):
 
 def dispatch_cb(cb):
     """Gère tous les boutons inline Telegram."""
-    uid   = cb["from"]["id"]
+    uid   = cb.get("from", {}).get("id")
+    if not uid:
+        return
     uname = cb.get("from", {}).get("username", "")
     data  = cb.get("data", "")
     mid   = cb.get("message", {}).get("message_id")   # pour tg_edit (recheck)
@@ -8585,7 +8595,9 @@ def process_update(upd):
                             args=(uid, uname, fname), daemon=True).start()
                 return
 
-            uid   = msg["from"]["id"]
+            uid   = msg.get("from", {}).get("id")
+            if not uid:
+                return
             uname = msg.get("from", {}).get("username", "")
             fname = msg.get("from", {}).get("first_name", "")
             txt   = msg.get("text", "")
