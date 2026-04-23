@@ -707,3 +707,4 @@ def migrate_sqlite_to_pg(sqlite_path="ab10.db"):
         print("[MIGRATE] ✅ Migration SQLite → PostgreSQL terminée")
     except Exception as e:
         print("[MIGRATE] Erreur : {}".format(e))
+
