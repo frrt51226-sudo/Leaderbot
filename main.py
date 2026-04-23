@@ -24,9 +24,21 @@ from queue import Queue, Empty
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from collections import defaultdict, deque
 
-# ── IA externe désactivée — algo ICT/SMC seul ───────────────────────
-_ANTHROPIC_OK = False
-_GEMINI_OK    = False
+# ── Anthropic SDK (Claude AI Validator) ─────────────────────────────
+try:
+    import anthropic as _anthropic_sdk
+    _ANTHROPIC_OK = True
+except ImportError:
+    _ANTHROPIC_OK = False
+    print("[ClaudeAI] ⚠️  pip install anthropic requis pour la validation IA")
+
+# ── Google Gemini SDK (Validateur alternatif) ────────────────────────
+try:
+    import google.genai as _genai_sdk
+    _GEMINI_OK = True
+except ImportError:
+    _GEMINI_OK = False
+    print("[GeminiAI] ⚠️  pip install google-genai pour le fallback Gemini")
 
 # ══════════════════════════════════════════════════════
 #  CONFIG
@@ -48,174 +60,23 @@ VIP_GROUP_LINK  = os.getenv("VIP_GROUP_LINK",  "https://t.me/+alphabotvip")    #
 # ══════════════════════════════════════════════════════════════════════
 #  MODULE CLAUDE AI — VALIDATEUR EXPERT ICT/SMC
 # ══════════════════════════════════════════════════════════════════════
-CLAUDE_API_KEY   = os.getenv("ANTHROPIC_API_KEY", "")  # clé via variable d'env Render
-CLAUDE_MODEL     = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5")
-CLAUDE_TOKENS    = 500
-GEMINI_API_KEY   = ""   # désactivé
-GEMINI_MODEL     = ""
-AI_VALIDATOR     = "none"
-AI_SCORE_MIN     = 0.0
-AI_PROBA_MIN     = 0.0
-FINAL_HYBRID_MIN = 0.0
-AI_WEIGHT        = 0.0
-ALGO_WEIGHT      = 1.0
+CLAUDE_API_KEY   = os.getenv("ANTHROPIC_API_KEY", "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")
+CLAUDE_MODEL     = "claude-sonnet-4-5-20250514"   # ✨ Sonnet — meilleure qualité d'analyse
+CLAUDE_TOKENS    = 600
+GEMINI_API_KEY   = os.getenv("GEMINI_API_KEY", "")  # Optionnel — fallback auto
+GEMINI_MODEL     = "gemini-2.0-flash"
+# AI_VALIDATOR : auto = Claude prioritaire → Gemini fallback si Claude échoue
+#   claude = Claude seul | gemini = Gemini seul | both = vote majoritaire
+AI_VALIDATOR     = os.getenv("AI_VALIDATOR", "auto")
+AI_SCORE_MIN     = 7.0
+AI_PROBA_MIN     = 55.0
+FINAL_HYBRID_MIN = 75.0
+AI_WEIGHT        = 0.40
+ALGO_WEIGHT      = 0.60
 _ai_cache     = {}
 _ai_cache_ttl = 300
 _ai_lock      = threading.Lock()
 _LAI          = logging.getLogger("ClaudeAI")
-
-# ── Circuit-Breaker IA ────────────────────────────────────────────────
-# Si les deux IA échouent consécutivement, les signaux sont BLOQUÉS
-# (plus de bypass silencieux). L'admin reçoit une alerte Telegram.
-_CB_THRESHOLD      = 999999     # circuit-breaker désactivé
-_CB_RESET_SEC      = 60
-_cb_lock           = threading.Lock()
-_cb_failures       = 0
-_cb_triggered      = False
-_cb_last_fail_ts   = 0.0
-_cb_last_alert_ts  = 0.0
-
-
-# ══════════════════════════════════════════════════════════════════════
-#  CLAUDE — ANALYSE FONDAMENTALE POST-SIGNAL (non-bloquante)
-#  Le signal est déjà envoyé. Claude commente en message séparé.
-# ══════════════════════════════════════════════════════════════════════
-
-def claude_fundamental_comment(sig: dict, session: str):
-    """
-    Appelle Claude pour générer un commentaire fondamental sur le signal
-    déjà envoyé. Retourne le texte HTML ou None si indisponible.
-    Timeout 15s — jamais bloquant.
-    """
-    if not CLAUDE_API_KEY:
-        return None
-    try:
-        import anthropic as _sdk
-    except ImportError:
-        return None
-
-    pair   = sig.get("name", "?")
-    side   = "ACHAT 📈" if sig.get("side") == "BUY" else "VENTE 📉"
-    entry  = sig.get("entry", "?")
-    sl     = sig.get("sl", "?")
-    tp     = sig.get("tp", "?")
-    score  = sig.get("score", 0)
-    rr     = sig.get("rr", "?")
-    bias   = sig.get("bias", "NEUTRAL")
-
-    prompt = (
-        "Tu es analyste macro senior. Un signal de trading vient d'être envoyé :\n\n"
-        "Paire : {pair} | Direction : {side}\n"
-        "Entrée : {entry}  SL : {sl}  TP : {tp}  RR : 1:{rr}\n"
-        "Biais technique H1 : {bias} | Score algo : {score}/100\n"
-        "Session : {session}\n\n"
-        "En 4-6 phrases max, donne une analyse fondamentale utile pour ce trade :\n"
-        "1. Contexte macro actuel pour cet instrument (dollar, risk-on/off, données récentes)\n"
-        "2. Ce que les institutionnels regardent sur cette paire en ce moment\n"
-        "3. Un niveau ou catalyseur clé à surveiller (news, session, niveau technique HTF)\n"
-        "4. Comment gérer le trade si le marché hésite avant TP\n\n"
-        "Réponds directement en français, style professionnel concis, sans titre ni bullet points."
-    ).format(pair=pair, side=side, entry=entry, sl=sl, tp=tp,
-             rr=rr, bias=bias, score=score, session=session)
-
-    try:
-        client = _sdk.Anthropic(api_key=CLAUDE_API_KEY)
-        resp   = client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=CLAUDE_TOKENS,
-            messages=[{"role": "user", "content": prompt}],
-            timeout=15
-        )
-        text = resp.content[0].text.strip()
-        if not text:
-            return None
-        msg = (
-            "🧠 <b>Analyse Fondamentale — {pair}</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━\n\n"
-            "{text}\n\n"
-            "<i>📌 Analyse complémentaire — le signal reste valide selon l'algo ICT/SMC.</i>"
-        ).format(pair=pair, text=text)
-        return msg
-    except Exception as e:
-        logging.getLogger("ClaudeAI").warning("claude_fundamental_comment: {}".format(e))
-        return None
-
-
-def _send_fundamental_comment_async(sig: dict, session: str, targets: list):
-    """
-    Lance l'analyse fondamentale Claude en thread séparé.
-    Envoie le résultat aux cibles (channel VIP + DM PRO) sans bloquer le scan.
-    targets = liste de chat_id
-    """
-    def _run():
-        try:
-            msg = claude_fundamental_comment(sig, session)
-            if not msg:
-                return
-            for chat_id in targets:
-                try:
-                    tg_send(chat_id, msg)
-                    time.sleep(0.05)
-                except Exception:
-                    pass
-        except Exception as e:
-            logging.getLogger("ClaudeAI").warning("_send_fundamental_comment_async: {}".format(e))
-
-    threading.Thread(target=_run, daemon=True, name="FundComment").start()
-
-
-def _cb_record_failure() -> bool:
-    """
-    Enregistre un échec IA double (Claude + Gemini = None).
-    Retourne True si le circuit-breaker vient de se déclencher.
-    """
-    global _cb_failures, _cb_triggered, _cb_last_fail_ts, _cb_last_alert_ts
-    with _cb_lock:
-        _cb_failures     += 1
-        _cb_last_fail_ts  = time.time()
-        if _cb_failures >= _CB_THRESHOLD and not _cb_triggered:
-            _cb_triggered = True
-            # Alerte admin (anti-spam : max 1 alerte / 5 min)
-            if time.time() - _cb_last_alert_ts > 300:
-                _cb_last_alert_ts = time.time()
-                try:
-                    tg_send(ADMIN_ID,
-                        "🔴 <b>CIRCUIT-BREAKER IA DÉCLENCHÉ</b>\n\n"
-                        "Les deux IA (Claude + Gemini) ont échoué <b>{}</b> fois de suite.\n"
-                        "Les signaux sont maintenant <b>BLOQUÉS</b> pour protéger le compte.\n\n"
-                        "⚡ Actions requises :\n"
-                        "1️⃣ Vérifier la clé <code>ANTHROPIC_API_KEY</code> sur console.anthropic.com\n"
-                        "2️⃣ Vérifier le quota <code>GEMINI_API_KEY</code> sur Google AI Studio\n\n"
-                        "🔄 Reset auto dans {}min si les IA répondent à nouveau.".format(
-                            _cb_failures, _CB_RESET_SEC // 60))
-                except Exception:
-                    pass
-            return True
-        return False
-
-
-def _cb_record_success():
-    """Enregistre un succès IA — remet le circuit-breaker à zéro."""
-    global _cb_failures, _cb_triggered
-    with _cb_lock:
-        _cb_failures  = 0
-        _cb_triggered = False
-
-
-def _cb_auto_reset():
-    """Reset silencieux si aucun échec depuis _CB_RESET_SEC secondes."""
-    global _cb_failures, _cb_triggered
-    with _cb_lock:
-        if _cb_triggered and time.time() - _cb_last_fail_ts > _CB_RESET_SEC:
-            _cb_failures  = 0
-            _cb_triggered = False
-            _LAI.info("Circuit-breaker IA : reset automatique après {}s sans échec".format(_CB_RESET_SEC))
-            try:
-                tg_send(ADMIN_ID,
-                    "🟢 <b>Circuit-breaker IA réinitialisé</b>\n"
-                    "Les signaux peuvent à nouveau passer si une IA répond.")
-            except Exception:
-                pass
 
 
 def _claude_session_risk(session: str) -> str:
@@ -379,22 +240,13 @@ TP1 distance: {tp1_dist_pct:.3f}% de l'entrée
 Volatilité  : ATR = {atr} (~{candles} bougies M15)
 
 ══ ANALYSE TECHNIQUE DÉTAILLÉE ════════════════════════
-Vérifie ces confirmations ICT/SMC (badges détectés par l'algo) :
-  1. Biais H1 confirmé ? (EMA20/50, HH-HL ou LL-LH, CHoCH/BOS)
+Vérifie ces 6 confirmations :
+  1. Biais H1 confirmé ? (EMA20/50, HH-HL ou LL-LH, CHoCH)
   2. Order Block M15 présent et non mitigé ?
-  3. FVG / Imbalance M15 actif dans la direction ?
+  3. FVG M15 actif dans la direction ?
   4. Confirmation M5 alignée ? (biais + structure LTF)
-  5. Entrée en zone Discount (BUY) ou Premium (SELL) ?
-  6. RR >= 2.0 réel calculé sur ce setup ?
-  7. BOS ou CHoCH M5 confirmé dans la direction ?
-  8. Mitigation Block présent (prix revient miter une zone) ?
-  9. Inducement (IDM) détecté — stops chassés avant le move ?
-  10. Liquidity Void / Imbalance Retest en cours ?
-  11. Order Flow Shift — momentum institutionnel croissant ?
-  12. Three Drives — épuisement et retournement ?
-
-Badges ICT présents dans ce setup : {badges}
-→ Utilise ces badges pour évaluer la qualité structurelle réelle.
+  5. Entrée sur zone OTE / discount (BUY) ou premium (SELL) ?
+  6. RR ≥ 2.0 réel calculé sur ce setup ?
 
 ══ ANALYSE FONDAMENTALE DÉTAILLÉE ════════════════════
   A. Quelle devise est la plus forte fondamentalement ?
@@ -403,24 +255,16 @@ Badges ICT présents dans ce setup : {badges}
   D. La corrélation DXY / matières premières confirme-t-elle ?
 
 ══ RÈGLE DE VALIDATION ════════════════════════════════
-⚠️ IMPORTANT : Le score algo peut être bas ou insuffisant.
-Ton rôle est de VALIDER si TOI tu constates que :
+VALIDER si :
+  ✅ Score algo ≥ 65/100
+  ✅ RR ≥ 2.0
+  ✅ Biais HTF aligné (H1 + M15 cohérents)
+  ✅ Fondamentaux ALIGNE ou NEUTRE (jamais CONTRE)
+  ✅ Aucune news BLOQUANTE dans les 2h
+  ✅ Au moins 3 confirmations techniques sur 6
 
-  ✅ La STRUCTURE graphique confirme (OB, FVG, CHoCH, BOS, patterns)
-  ✅ Le BIAIS HTF H1 est clair et aligné avec la direction
-  ✅ Les FONDAMENTAUX confirment ou sont neutres (jamais CONTRE)
-  ✅ Les NEWS live ne bloquent pas (pas d'événement HIGH dans 30min)
-  ✅ RR >= 2.0 (le trade vaut le risque)
-
-VALIDER MEME SI score algo faible, si :
-  -> La structure technique est propre (zones claires, setup ICT valide)
-  -> Les fondamentaux / news live poussent dans la même direction
-  -> Le timing est acceptable (pas en rollover ou hors session complète)
-
-REJETER UNIQUEMENT si :
-  -> Fondamentaux ACTIVEMENT CONTRE le trade
-  -> News HIGH impactante dans moins de 30 minutes
-  -> Structure graphique totalement absente (pas d'OB, pas de biais H1)
+REJETER UNIQUEMENT si : fondamentaux CONTRE le trade OU news BLOQUANT.
+Pour tout le reste → VALIDER avec note de risque.
 
 Réponds UNIQUEMENT avec ce JSON exact :
 {{
@@ -660,47 +504,17 @@ def claude_validate_signal(sig: dict, session: str, htf_trend: str) -> dict:
     elapsed = round(time.time() - t0, 2)
 
     if not parsed:
-        # ── Circuit-Breaker : bloquer seulement si une IA était réellement disponible ──
-        _cb_auto_reset()
-        claude_ready = _ANTHROPIC_OK and bool(CLAUDE_API_KEY)
-        gemini_ready = _GEMINI_OK and bool(GEMINI_API_KEY)
-
-        if not claude_ready and not gemini_ready:
-            # Aucune IA configurée — bypass propre sans incrémenter le compteur
-            _LAI.warning("Aucune IA configurée — signal accepté par algo seul")
-            algo_sc = float(sig.get("score", 0))
-            return {**fail, "validated": True, "verdict": "VALIDER",
-                    "raison": "IA non configurée — algo seul",
-                    "final_score": algo_sc, "ai_source": "none"}
-
-        # Au moins une IA était disponible mais a échoué → incrémenter le compteur
-        triggered = _cb_record_failure()
-        if triggered:
-            _LAI.warning(
-                "CIRCUIT-BREAKER OUVERT — signal BLOQUÉ ({}x échec IA consécutif)".format(
-                    _cb_failures))
-            return {**fail,
-                    "validated"  : False,
-                    "verdict"    : "REJETER",
-                    "raison"     : "⛔ Circuit-breaker IA : Claude + Gemini indisponibles — signal bloqué par sécurité.",
-                    "final_score": 0.0,
-                    "ai_source"  : "none"}
-        # Sous le seuil : bypass toléré mais loggé explicitement
-        _LAI.warning(
-            "Aucune IA n'a répondu — bypass temporaire ({}/{} échecs)".format(
-                _cb_failures, _CB_THRESHOLD))
+        _LAI.warning("Aucune IA n'a répondu — signal accepté par algo seul (v21 bypass)")
         algo_sc = float(sig.get("score", 0))
         return {**fail,
                 "validated"  : True,
                 "verdict"    : "VALIDER",
-                "raison"     : "IA indisponible — décision par algo seul ({}/{} échecs)".format(
-                    _cb_failures, _CB_THRESHOLD),
+                "raison"     : "IA indisponible — décision par algo seul",
                 "final_score": algo_sc,
                 "ai_source"  : "none"}
 
     # Champs retournés par le nouveau prompt fondamental
-    # IA a répondu → réinitialiser le circuit-breaker
-    _cb_record_success()
+    verdict      = parsed.get("verdict", "REJETER").upper()
     raison       = parsed.get("raison", "?")
     risque       = parsed.get("risque_principal", "?")
     timing_ok    = bool(parsed.get("timing_ok", False))
@@ -724,12 +538,11 @@ def claude_validate_signal(sig: dict, session: str, htf_trend: str) -> dict:
     news_block_ia = (news_impact == "BLOQUANT")
     fund_ok       = (biais_fond != "CONTRE")
 
-    # Validation : Claude a le dernier mot — seuls les fondamentaux CONTRE
-    # et les news BLOQUANTES sont des vetos absolus. Le timing et le score
-    # algo ne bloquent pas : Claude analyse la structure live et décide.
     validated = (verdict == "VALIDER"
                  and fund_ok           # macro pas contre le trade
-                 and not news_block_ia) # pas de news bloquante immédiate
+                 and not news_block_ia # pas de news bloquante
+                 and timing_ok)        # heure/jour favorables
+                 # tp_atteignable retiré v21 — TP n'est pas un critère bloquant
 
     result = {
         "validated"        : validated,
@@ -812,7 +625,31 @@ def fmt_ai_block(ai: dict) -> str:
     if sl_opt:
         lines.append("🛡️ <b>SL optimal IA :</b> <code>{}</code>".format(sl_opt))
     lines.append("━"*20)
-    return "\n".join(lines)  # ✅ FIX : code mort supprimé (ancien bloc v19 inaccessible)
+    return "\n".join(lines)
+
+    # Label dynamique selon la source IA utilisée
+    source = ai.get("ai_source", "claude").lower()
+    if source == "gemini":
+        ai_label = "GEMINI"
+    elif source == "both":
+        ai_label = "CLAUDE + GEMINI"
+    else:
+        ai_label = "CLAUDE"
+
+    return (
+        "\n━━━━━━━━━━━━━━━━━━━\n"
+        "🧠 <b>ANALYSE IA — {}</b>\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "{} <b>{}</b>\n\n"
+        "📊 Score IA    : <b>{}/10</b>  [{}]\n"
+        "📈 Probabilité : <b>{}%</b>\n"
+        "⭐ Score final : <b>{}/100</b>\n"
+        "⏱️ Timing      : {}\n\n"
+        "💡 <i>{}</i>\n\n"
+        "⚠️ Risque : <i>{}</i>\n"
+        "━━━━━━━━━━━━━━━━━━━"
+    ).format(ai_label, v_icon, verdict, ai_score, bar,
+             ai_proba, final_sc, timing, raison, risque)
 
 
 # ══════════════════════════════════════════════════════
@@ -993,7 +830,7 @@ except ImportError:
 
 PRO_PRICE  = 10;  REF_TARGET = 30;  REF_MONTHS = 3
 FREE_LIMIT = 3;   PRO_LIMIT  = 10;  NB_AGENTS  = 20
-TRIAL_DAYS = 3;   SCAN_SEC   = 60;  DATA_MAX_AGE = 120  # ✅ 60s évite surcharge + rate-limit Yahoo
+TRIAL_DAYS = 3;   SCAN_SEC   = 30;  DATA_MAX_AGE = 120
 DAILY_HOUR = 22;  WEEKLY_DAY = 6;   WEEKLY_HOUR = 21
 SIGNAL_CUTOFF_HOUR = 22   # Aucun signal envoyé à partir de 22h00 UTC
 FEE_TAKER  = 0.0004
@@ -1966,212 +1803,14 @@ def pat_fake_breakout(c, bias):
         body = abs(last["c"] - last["o"])
         return last["c"] < prev["h"] and upper_wick > body * 1.5 and last["c"] < last["o"]
 
-
-def pat_bos_choch_confirm(c, bias):
-    """
-    BOS / CHoCH confirmé sur M5 :
-    - BOS  : cassure d'un swing high (BULLISH) ou low (BEARISH) avec clôture au-delà
-    - CHoCH: premier BOS dans la direction opposée à la tendance précédente
-    Signal fort de continuation ou retournement.
-    """
-    if len(c) < 15: return False, ""
-    H, L = [], []
-    for i in range(3, len(c)-3):
-        w = c[i-3:i+4]
-        if c[i]["h"] == max(x["h"] for x in w): H.append((i, c[i]["h"]))
-        if c[i]["l"] == min(x["l"] for x in w): L.append((i, c[i]["l"]))
-    last = c[-1]["c"]
-    if bias == "BULLISH" and len(H) >= 2:
-        if last > H[-1][1]:
-            prev_trend = H[-1][1] > H[-2][1]
-            return True, ("BOS ✓" if prev_trend else "CHoCH ✓")
-    if bias == "BEARISH" and len(L) >= 2:
-        if last < L[-1][1]:
-            prev_trend = L[-1][1] < L[-2][1]
-            return True, ("BOS ✓" if prev_trend else "CHoCH ✓")
-    return False, ""
-
-
-def pat_mitigation_block(c, bias):
-    """
-    Mitigation Block : bougie qui a créé un déséquilibre (FVG)
-    et que le prix revient miter (combler partiellement).
-    Zone de haute probabilité ICT.
-    """
-    if len(c) < 20: return False
-    lp = c[-1]["c"]
-    for i in range(len(c)-10, max(0, len(c)-50), -1):
-        if bias == "BULLISH":
-            # Chercher une bougie baissière forte suivie d'un mouvement haussier
-            if c[i]["c"] < c[i]["o"]:
-                body = c[i]["o"] - c[i]["c"]
-                # Le prix revient dans la bougie (mitigation)
-                if c[i]["c"] <= lp <= c[i]["o"] and body > 0:
-                    return True
-        else:
-            if c[i]["c"] > c[i]["o"]:
-                body = c[i]["c"] - c[i]["o"]
-                if c[i]["o"] <= lp <= c[i]["c"] and body > 0:
-                    return True
-    return False
-
-
-def pat_imbalance_retest(c, bias):
-    """
-    Imbalance / FVG Retest :
-    Déséquilibre créé entre 3 bougies (gap non comblé) que le prix revient tester.
-    Pattern ICT haute probabilité — confirmation que le marché reconnaît la zone.
-    """
-    if len(c) < 10: return False
-    lp = c[-1]["c"]
-    for i in range(1, min(len(c)-1, 40)):
-        if bias == "BULLISH":
-            gap_lo = c[i-1]["h"]
-            gap_hi = c[i+1]["l"]
-            if gap_hi > gap_lo * 1.0001:
-                mid = (gap_lo + gap_hi) / 2
-                if gap_lo * 0.9995 <= lp <= gap_hi * 1.0005:
-                    return True
-        else:
-            gap_hi = c[i-1]["l"]
-            gap_lo = c[i+1]["h"]
-            if gap_hi > gap_lo * 1.0001:
-                mid = (gap_hi + gap_lo) / 2
-                if gap_lo * 0.9995 <= lp <= gap_hi * 1.0005:
-                    return True
-    return False
-
-
-def pat_liquidity_void(c, bias):
-    """
-    Liquidity Void : zone où le prix a bougé très vite (peu de bougies, grand mouvement).
-    Le prix revient souvent combler ce vide — zone d'entrée SMC.
-    """
-    if len(c) < 20: return False
-    atr_v = sum(abs(x["c"]-x["o"]) for x in c[-14:]) / 14 if len(c) >= 14 else 0
-    if atr_v == 0: return False
-    lp = c[-1]["c"]
-    for i in range(5, min(len(c)-5, 60)):
-        move = abs(c[i]["c"] - c[i-3]["c"])
-        if move > atr_v * 3.0:  # mouvement > 3× ATR en peu de bougies = void
-            zone_lo = min(c[i]["c"], c[i-3]["c"])
-            zone_hi = max(c[i]["c"], c[i-3]["c"])
-            if zone_lo * 0.999 <= lp <= zone_hi * 1.001:
-                if bias == "BULLISH" and c[i]["c"] > c[i-3]["c"]:
-                    return True
-                if bias == "BEARISH" and c[i]["c"] < c[i-3]["c"]:
-                    return True
-    return False
-
-
-def pat_inducement(c, bias):
-    """
-    Inducement (IDM) : faux mouvement conçu pour piéger les retail traders.
-    Un swing mineur dépasse le dernier high/low puis le prix repart dans la direction originale.
-    Confirmation que les stops ont été chassés — setup institutionnel.
-    """
-    if len(c) < 15: return False
-    recent = c[-15:]
-    lp = recent[-1]["c"]
-    if bias == "BULLISH":
-        # Recherche d'un spike bas suivi de rejet fort
-        lows = [x["l"] for x in recent[:-3]]
-        if not lows: return False
-        ref_low = min(lows)
-        spike_candle = min(recent[-6:-1], key=lambda x: x["l"])
-        if spike_candle["l"] < ref_low and lp > ref_low:
-            wick = min(spike_candle["o"], spike_candle["c"]) - spike_candle["l"]
-            body = abs(spike_candle["c"] - spike_candle["o"])
-            return wick > body * 1.2
-    else:
-        highs = [x["h"] for x in recent[:-3]]
-        if not highs: return False
-        ref_high = max(highs)
-        spike_candle = max(recent[-6:-1], key=lambda x: x["h"])
-        if spike_candle["h"] > ref_high and lp < ref_high:
-            wick = spike_candle["h"] - max(spike_candle["o"], spike_candle["c"])
-            body = abs(spike_candle["c"] - spike_candle["o"])
-            return wick > body * 1.2
-    return False
-
-
-def pat_premium_discount(c, bias):
-    """
-    Premium / Discount Zone (ICT) :
-    - BUY dans la zone Discount (< 50% du range récent) — prix bas = valeur
-    - SELL dans la zone Premium (> 50% du range récent) — prix haut = overvalué
-    Basé sur la théorie des prix institutionnels ICT.
-    """
-    if len(c) < 30: return False
-    highs = [x["h"] for x in c[-30:]]
-    lows  = [x["l"] for x in c[-30:]]
-    rng_h = max(highs); rng_l = min(lows)
-    if rng_h <= rng_l: return False
-    mid   = (rng_h + rng_l) / 2
-    lp    = c[-1]["c"]
-    equilibrium_band = (rng_h - rng_l) * 0.08  # 8% autour du mid
-    if bias == "BULLISH":
-        return lp < mid - equilibrium_band  # discount
-    else:
-        return lp > mid + equilibrium_band  # premium
-
-
-def pat_three_drives(c, bias):
-    """
-    Three Drives Pattern : 3 poussées successives avec des hauts/bas décroissants.
-    Indique l'épuisement du mouvement — retournement imminent.
-    """
-    if len(c) < 30: return False
-    if bias == "BEARISH":
-        # 3 hauts décroissants
-        highs = [x["h"] for x in c[-30:]]
-        h1 = max(highs[:10]); h2 = max(highs[10:20]); h3 = max(highs[20:])
-        return h1 > h2 > h3 and abs(h1-h3)/h1 > 0.003
-    else:
-        lows = [x["l"] for x in c[-30:]]
-        l1 = min(lows[:10]); l2 = min(lows[10:20]); l3 = min(lows[20:])
-        return l1 < l2 < l3 and abs(l3-l1)/l1 > 0.003
-
-
-def pat_order_flow_shift(c, bias):
-    """
-    Order Flow Shift : changement du flux d'ordres détecté sur les dernières bougies.
-    Série de bougies de plus en plus fortes dans la direction du bias = momentum institutionnel.
-    """
-    if len(c) < 6: return False
-    recent = c[-5:]
-    if bias == "BULLISH":
-        bull_bodies = [abs(x["c"]-x["o"]) for x in recent if x["c"] > x["o"]]
-        bear_bodies = [abs(x["c"]-x["o"]) for x in recent if x["c"] < x["o"]]
-        if len(bull_bodies) >= 3 and recent[-1]["c"] > recent[-1]["o"]:
-            avg_bull = sum(bull_bodies) / len(bull_bodies)
-            avg_bear = sum(bear_bodies) / len(bear_bodies) if bear_bodies else 0
-            return avg_bull > avg_bear * 1.5
-    else:
-        bear_bodies = [abs(x["c"]-x["o"]) for x in recent if x["c"] < x["o"]]
-        bull_bodies = [abs(x["c"]-x["o"]) for x in recent if x["c"] > x["o"]]
-        if len(bear_bodies) >= 3 and recent[-1]["c"] < recent[-1]["o"]:
-            avg_bear = sum(bear_bodies) / len(bear_bodies)
-            avg_bull = sum(bull_bodies) / len(bull_bodies) if bull_bodies else 0
-            return avg_bear > avg_bull * 1.5
-    return False
-
 def pattern_score_m5(c, bias):
     """
-    Calcule le bonus de score total des patterns M5 + SMC avancés.
+    Calcule le bonus de score total des patterns M5.
     Retourne (score_bonus, liste_badges).
-    Max +100 pts. Tous optionnels — Claude valide en final.
-
-    Patterns inclus :
-    ─ Classiques  : H&S, Double Top/Bot, Breakout, Fake BO
-    ─ SMC/ICT     : BOS/CHoCH, Mitigation Block, Imbalance Retest,
-                    Liquidity Void, Inducement, Premium/Discount,
-                    Three Drives, Order Flow Shift
+    Max +50 pts. Tous optionnels.
     """
-    if not c or len(c) < 10: return 0, []
+    if not c or len(c) < 20: return 0, []
     score = 0; badges = []
-
-    # ── Patterns classiques ──────────────────────────────────────
     if pat_head_shoulders(c, bias):
         score += 15
         badges.append("H&S ✓" if bias=="BEARISH" else "IH&S ✓")
@@ -2184,42 +1823,7 @@ def pattern_score_m5(c, bias):
     if pat_fake_breakout(c, bias):
         score += 15
         badges.append("Fake BO ✓")
-
-    # ── Patterns SMC/ICT avancés ─────────────────────────────────
-    bos_ok, bos_label = pat_bos_choch_confirm(c, bias)
-    if bos_ok:
-        score += 20
-        badges.append(bos_label)
-
-    if pat_mitigation_block(c, bias):
-        score += 16
-        badges.append("Mitigation ✓")
-
-    if pat_imbalance_retest(c, bias):
-        score += 14
-        badges.append("Imbalance ✓")
-
-    if pat_liquidity_void(c, bias):
-        score += 12
-        badges.append("Liq.Void ✓")
-
-    if pat_inducement(c, bias):
-        score += 18
-        badges.append("IDM ✓")
-
-    if pat_premium_discount(c, bias):
-        score += 10
-        badges.append("Discount ✓" if bias=="BULLISH" else "Premium ✓")
-
-    if pat_three_drives(c, bias):
-        score += 14
-        badges.append("3 Drives ✓")
-
-    if pat_order_flow_shift(c, bias):
-        score += 12
-        badges.append("OFS ✓")
-
-    return min(score, 100), badges
+    return min(score, 50), badges
 
 # ══════════════════════════════════════════════════════
 #  AGENT ANALYZE PRINCIPAL
@@ -2982,9 +2586,9 @@ def ai_scan_sym(sym, bias, bal):
     c15 = list(AI_C[sym].get("15m", deque()))
     if len(c5) < 12: return None
     ch = chal_get()
-    if not ch or ch.get("balance", 0) < FLOOR_USD: return None
-    dop = ch.get("day_open", ch.get("balance", 0))
-    if dop > 0 and (dop - ch.get("balance", 0)) / dop >= DD_LIMIT: return None
+    if ch["balance"] < FLOOR_USD: return None
+    dop = ch.get("day_open", ch["balance"])
+    if dop > 0 and (dop - ch["balance"]) / dop >= DD_LIMIT: return None
     sn, _, _, _ = get_session()
     if sn == "OFF": return None
     reg = AI_REG
@@ -3032,7 +2636,7 @@ def ai_scan_sym(sym, bias, bal):
         elif wr < 0.45: sc -= 12
     min_sc = reg.get("min_score", 72)
     if sc < min_sc: return None
-    risk = ai_risk(bal, sc, ch.get("am_cycle", 0), sn)
+    risk = ai_risk(bal, sc, ch["am_cycle"], sn)
     lev  = ai_lev(sym, bal, sc)
     lot  = lot_calc(sym, risk, sld, sig["entry"], lev)
     if not lot["qty"]: return None
@@ -3042,7 +2646,7 @@ def ai_scan_sym(sym, bias, bal):
         "risk":risk,"lev":lev,"qty":lot["qty"],"not":lot["not"],
         "ft":lot["ft"],"rr_real":lot["rr"],
         "strat":strat,"sess":sn,"regime":reg.get("regime","?"),
-        "am":ch.get("am_cycle", 0),
+        "am":ch["am_cycle"],
     }
 
 
@@ -3052,7 +2656,7 @@ def ai_full_scan():
     Couvre BTC, ETH + top altcoins USDT, triés par volume.
     """
     bias = ai_btc_bias()
-    ch   = chal_get(); bal = ch.get("balance", 0.0)
+    ch   = chal_get(); bal = ch["balance"]
     res  = []
     for sym in AI_PRS[:20]:
         s = ai_scan_sym(sym, bias, bal)
@@ -3065,7 +2669,7 @@ def ai_open(setup):
     """Ouvre une position Challenge IA simulée et notifie l'admin."""
     global AI_TC
     AI_TC += 1; tid = AI_TC; sym = setup["sym"]
-    ch  = chal_get(); bal = ch.get("balance", 0.0)
+    ch  = chal_get(); bal = ch["balance"]
     trade = {
         "id":tid,"symbol":sym,"side":setup["side"],
         "entry":setup["entry"],"sl":setup["sl"],"sl0":setup["sl"],
@@ -3080,7 +2684,8 @@ def ai_open(setup):
     with _ai_lk:
         AI_OT[tid] = trade
         AI_CD[sym]  = datetime.now(timezone.utc) + timedelta(minutes=COOLDOWN_MIN)
-    ch  = chal_get(); bal = ch.get("balance", 0.0)
+    ch  = chal_get(); bal = ch["balance"]
+    d   = "🟢 LONG" if setup["side"] == "BUY" else "🔴 SHORT"
     prog = chal_prog(ch)
     tg_send(ADMIN_ID,
         "<b>━━━ TRADE IA #{} ━━━</b>\n{} <b>{}</b>\n"
@@ -3114,10 +2719,9 @@ def ai_open(setup):
 
 
 def ai_check():
-    """Suivi des trades Challenge IA ouverts (TP/SL/BE)."""
+    """Challenge IA désactivé — fonction conservée pour compatibilité."""
+    pass
     ch = chal_get()
-    with _ai_lk:
-        trades = list(AI_OT.values())
     for t in trades:
         if t["status"] != "open": continue
         price = bn_price(t["symbol"])
@@ -3152,13 +2756,13 @@ def ai_check():
                 od  = datetime.fromisoformat(t.get("open_ts", ""))
                 dur = "{}min".format(int((datetime.now(timezone.utc) - od).total_seconds() / 60))
             except: pass
-            am_old = ch.get("am_cycle", 0)
+            am_old = ch["am_cycle"]
             if result == "WIN":
                 ch["w_streak"] = ch.get("w_streak", 0) + 1; ch["l_streak"] = 0
-                ch["am_cycle"] = 0 if ch["w_streak"] >= AM_MAX else min(ch.get("am_cycle", 0) + 1, AM_MAX)
+                ch["am_cycle"] = 0 if ch["w_streak"] >= AM_MAX else min(ch["am_cycle"] + 1, AM_MAX)
             else:
                 ch["l_streak"] = ch.get("l_streak", 0) + 1; ch["am_cycle"] = 0; ch["w_streak"] = 0
-            ch["balance"]   = round(ch.get("balance", 0.0) + net, 4)
+            ch["balance"]   = round(ch["balance"] + net, 4)
             ch["today_pnl"] = round(ch.get("today_pnl", 0) + net, 4)
             if net > 0: ch["today_w"] = ch.get("today_w", 0) + 1
             else:       ch["today_l"] = ch.get("today_l", 0) + 1
@@ -3173,11 +2777,11 @@ def ai_check():
                 "💵 {:+.4f}$  Frais:-{:.5f}$\n"
                 "📐 RR:{:.2f}  ⏱{}\n🔄 AM:{}→{}\n{}\n<b>@leaderOdg</b>".format(
                     hdr, t["id"], "🟢" if side == "BUY" else "🔴", t["symbol"],
-                    entry, price, net, t.get("ft", 0), rrc, dur, am_old, ch.get("am_cycle", 0), chal_prog(ch)))
+                    entry, price, net, t["ft"], rrc, dur, am_old, ch["am_cycle"], chal_prog(ch)))
             if result == "WIN":
                 tg_send(CHANNEL_ID,
                     "<b>✅ WIN IA #{} — {}</b>\n+{:.4f}$ RR:{:.2f}\nSolde:{:.4f}$\n<b>@leaderOdg</b>".format(
-                        t["id"], t["symbol"], net, rrc, ch.get("balance", 0)))
+                        t["id"], t["symbol"], net, rrc, ch["balance"]))
 
 
 def chal_prog(c):
@@ -3500,7 +3104,7 @@ def fmt_scan(results, news, scan_t, sl_l, sm, nb):
             sl_l, sm, news_ico),
         # Ligne 2 : challenge IA + régime
         "🤖 IA : <b>{:.4f}$</b>  ·  Régime : <b>{}</b>".format(
-            ch.get("balance", 0.0), reg.get("regime", "?")),
+            ch["balance"], reg.get("regime", "?")),
         # Ligne 3 : stats du jour
         "📊 Aujourd'hui : <b>{}✅  {}❌  {}🔄</b>  ({} signaux)  💵 +${}".format(
             st["wins"], st["losses"], st.get("open", 0), st["n"], st["g1"]),
@@ -3803,8 +3407,65 @@ def _scan_inner():
     with _sent_lk: sigs = [(s, k) for s, k in sigs if k not in _sent]
     sigs.sort(key=lambda x: -x[0]["score"])
 
-    # ── Pipeline IA désactivé — tous les signaux algo passent directement ──
-    # (Claude + Gemini supprimés — algo ICT/SMC seul)
+    # ── ✨ Pipeline IA : Gemini (détection) → Claude (validation) ──
+    # Étape 1 — Gemini filtre les setups prometteurs
+    if _GEMINI_OK and GEMINI_API_KEY and sigs:
+        sigs_gemini = []
+        for sig, key in sigs:
+            if sig.get("rr", 0) >= 2.0 and sig.get("score", 0) >= sm:
+                gem = gemini_scan_signal(sig, sn)
+                sig["gemini_scan"] = gem
+                if gem["approved"]:
+                    sigs_gemini.append((sig, key))
+                else:
+                    log("AI", "🔍 Gemini rejette {} — {}".format(
+                        sig["name"], gem.get("raison","?")[:60]))
+            else:
+                sig["gemini_scan"] = {"approved": True, "score_setup": 5, "raison": "Score < seuil, bypass Gemini"}
+                sigs_gemini.append((sig, key))
+        log("AI", "Gemini scan : {}/{} setups retenus".format(len(sigs_gemini), len(sigs)))
+        sigs = sigs_gemini
+
+    # Étape 2 — Claude valide le risque sur les setups approuvés par Gemini
+    if CLAUDE_API_KEY and sigs:
+        sigs_validated = []
+        for sig, key in sigs:
+            if sig.get("rr", 0) >= 2.0 and sig.get("score", 0) >= sm:
+                htf_trend = sig.get("bias", "BULLISH")
+                ai_result = claude_validate_signal(sig, sn, htf_trend)
+                sig["ai_result"] = ai_result
+                if ai_result["validated"]:
+                    sigs_validated.append((sig, key))
+                else:
+                    log("AI", "❌ Claude rejette {} — {} (hybride {}/100)".format(
+                        sig["name"],
+                        ai_result.get("raison","?")[:60],
+                        ai_result.get("final_score", 0)))
+            else:
+                sig["ai_result"] = {}
+                sigs_validated.append((sig, key))
+        log("AI", "Claude validation : {}/{} validés".format(len(sigs_validated), len(sigs)))
+        sigs = sigs_validated
+
+        # ── Optimisation TP/SL par Claude sur les signaux validés ──
+        for idx, (sig, key) in enumerate(sigs):
+            if sig.get("ai_result", {}).get("validated"):
+                try:
+                    opt = claude_optimize_tp_sl(sig, sn)
+                    if opt:
+                        if opt.get("sl_optimise"):
+                            sig["sl_ai"] = opt["sl_optimise"]
+                        if opt.get("tp1_optimise"):
+                            sig["tp_ai"] = opt["tp1_optimise"]
+                        if opt.get("tp2"):
+                            sig["tp2"]   = opt["tp2"]
+                        if opt.get("rr_tp2"):
+                            sig["rr_tp2"] = opt["rr_tp2"]
+                        sig["ai_note"] = opt.get("note", "")
+                        sigs[idx] = (sig, key)
+                except Exception as _oe:
+                    log("WARN", "Optim TP/SL: {}".format(_oe))
+    # ─────────────────────────────────────────────────────────────
 
 
 
@@ -3849,24 +3510,20 @@ def _scan_inner():
 
         # ── Groupe FREE → teasing uniquement (aucun niveau) ─────────
         ref_admin = "https://t.me/{}?start={}".format(BOT_USER, ADMIN_ID)
-        _kb_free = {"inline_keyboard": [
-            [{"text": "💵 Payer 10$/mois",      "url": ref_admin}],
-            [{"text": "🤝 Parrainer 10 amis",   "url": ref_admin}],
-            [{"text": "📢 Partager ce groupe",   "url": FREE_GROUP_LINK},
-             {"text": "👑 Groupe VIP",           "url": VIP_GROUP_LINK}],
-        ]}
         if chart_img:
             r = tg_send_photo(CHANNEL_ID, chart_img, caption=msg_teasing[:1024])
-            if not r.get("ok"):  # photo invalide → fallback texte
-                r = tg_send(CHANNEL_ID, msg_teasing, kb=_kb_free)
         else:
-            r = tg_send(CHANNEL_ID, msg_teasing, kb=_kb_free)
+            r = tg_send(CHANNEL_ID, msg_teasing,
+                        kb={"inline_keyboard": [
+                            [{"text": "💵 Payer 10$/mois",      "url": ref_admin}],
+                            [{"text": "🤝 Parrainer 10 amis",   "url": ref_admin}],
+                            [{"text": "📢 Partager ce groupe",   "url": FREE_GROUP_LINK},
+                             {"text": "👑 Groupe VIP",           "url": VIP_GROUP_LINK}],
+                        ]})
 
         # ── Groupe VIP → 1 seul message : signal PRO complet ────────
         if chart_img:
-            rv = tg_send_photo(VIP_CH, chart_img, caption=msg_p[:1024])
-            if not rv.get("ok"):
-                tg_send(VIP_CH, msg_p)
+            tg_send_photo(VIP_CH, chart_img, caption=msg_p[:1024])
         else:
             tg_send(VIP_CH, msg_p)
 
@@ -3876,9 +3533,6 @@ def _scan_inner():
             _throttle_record(now_check)
             log("SIG", "{} {} RR:1:{} Sc:{} G1:+${}".format(
                 clr(sig["name"], "b", "c"), sig["side"], sig["rr"], sc, sig["g1"]))
-            # ── Analyse fondamentale Claude (non-bloquante, message séparé) ──
-            fund_targets = [VIP_CH]  # groupe VIP + les PRO seront notifiés via DM ci-dessous
-            _send_fundamental_comment_async(sig, sn, fund_targets)
 
         # ── DM individuels : 1 seul message + bouton recheck ──────────
         # ── Stocker signal actif pour recheck live ──────────────
@@ -3893,10 +3547,16 @@ def _scan_inner():
               "callback_data": "check_sig_{}".format(pair_side_key)}],
             [{"text": "◀️ Menu", "callback_data": "start"}],
         ]}
-        for uid_row in all_users():
-            # all_users() peut retourner des dicts ou des int selon la DB
-            uid = uid_row["user_id"] if isinstance(uid_row, dict) else uid_row
+        for _row in all_users():
             try:
+                # Extraire uid correctement (dict avec clé "uid" ou entier direct)
+                if isinstance(_row, dict):
+                    uid = _row.get("uid") or _row.get("user_id") or _row.get("id")
+                else:
+                    uid = _row
+                if not uid:
+                    continue
+                uid = int(uid)
                 pro = is_pro(uid)
                 c   = count_today(uid)
                 # Vérif anti-doublon par user+signal
@@ -3915,7 +3575,7 @@ def _scan_inner():
                            (uid, key, datetime.now().isoformat()))
                 time.sleep(0.06)
             except Exception as _e:
-                log("WARN", "Notif uid={}: {}".format(uid, _e))
+                log("WARN", "Notif uid={}: {}".format(uid if 'uid' in dir() else '?', _e))
 
     # ── Aucun signal : message "pas de setup" si heure active ──────
     sn2,_,_,wknd2=get_session()
@@ -3952,12 +3612,10 @@ def _scan_inner():
                 # Groupe VIP : rapport complet PRO
                 tg_send(VIP_CH, d_pro)
                 # DM PRO
-                for puid_row in pro_users():
-                    puid = puid_row["user_id"] if isinstance(puid_row, dict) else puid_row
+                for puid in pru:
                     tg_send(puid, d_pro); time.sleep(0.04)
                 # DM FREE
-                for fuid_row in free_users():
-                    fuid = fuid_row["user_id"] if isinstance(fuid_row, dict) else fuid_row
+                for fuid in free_users():
                     tg_send(fuid, d_free); time.sleep(0.04)
                 mark_rep(st); _last_d = ds
     # Rapport hebdo (DM uniquement, pas dans les groupes)
@@ -3966,8 +3624,7 @@ def _scan_inner():
         ws = db_weekly_stats()
         if ws["n"] > 0:
             wmsg = "🏆 <b>RAPPORT HEBDO AlphaBot PRO</b>\n"+"═"*22+"\n\n📅 Semaine du {}\n\n💵 Lot 0.01: +${}\n💰 Lot 1.00: +${}\n\n📡 {} signaux  ·  {} wins  ·  {}%\n\n📩 @leaderodg_bot  ·  {}$ USDT".format(ws["ws"],ws["g001"],ws["g1"],ws["n"],ws["wins"],int(ws["wins"]/ws["n"]*100) if ws["n"] else 0,PRO_PRICE)
-            for puid_row in pro_users():
-                puid = puid_row["user_id"] if isinstance(puid_row, dict) else puid_row
+            for puid in pru:
                 tg_send(puid, wmsg); time.sleep(0.04)
             mark_rep(ws, "weekly_rep"); _last_w = wk
     # Expirations
@@ -3997,9 +3654,12 @@ def ai_scan_cycle():
 def broadcast_new_version():
     """Envoie un message de mise à jour à TOUS les utilisateurs avec leur lien de parrainage."""
     time.sleep(8)
-    users_data = db_all("SELECT user_id FROM users")
+    users_data = db_all("SELECT uid FROM users")
     count = ok = fail = 0
-    for (fuid,) in users_data:
+    for row in users_data:
+        fuid = row["uid"] if isinstance(row, dict) else row[0]
+        if not fuid: continue
+        if True:
         try:
             ref_link = "https://t.me/{}?start={}".format(BOT_USER, fuid)
             msg = (
@@ -5032,19 +4692,23 @@ def _scan_and_send_inner():
     if CLAUDE_API_KEY or GEMINI_API_KEY:
         sigs_validated_ai = []
         for sig, key in sigs_raw:
-            # Claude analyse TOUS les signaux (même score < sm)
-            # C'est Claude qui décide selon structure + fondamentaux + news live
-            htf_trend  = sig.get("bias", "BULLISH")
-            ai_result  = claude_validate_signal(sig, sn, htf_trend)
-            sig["ai_result"] = ai_result
-            if ai_result.get("biais_fondamental"): sig["fund_bias_ia"]  = ai_result["biais_fondamental"]
-            if ai_result.get("news_impact"):        sig["news_impact_ia"] = ai_result["news_impact"]
-            if ai_result["validated"]:
-                sigs_validated_ai.append((sig, key))
+            if sig.get("rr", 0) >= 2.0 and sig.get("score", 0) >= sm:
+                htf_trend  = sig.get("bias", "BULLISH")
+                ai_result  = claude_validate_signal(sig, sn, htf_trend)
+                sig["ai_result"] = ai_result
+                # Injecter les données fondamentales IA dans le signal
+                if ai_result.get("biais_fondamental"): sig["fund_bias_ia"]  = ai_result["biais_fondamental"]
+                if ai_result.get("news_impact"):        sig["news_impact_ia"] = ai_result["news_impact"]
+                if ai_result["validated"]:
+                    sigs_validated_ai.append((sig, key))
+                else:
+                    log("AI", "❌ {} rejeté — {} (hybride {}/100)".format(
+                        sig["name"],
+                        ai_result.get("raison","?")[:60],
+                        ai_result.get("final_score", 0)))
             else:
-                log("AI", "❌ {} rejeté par IA — {}".format(
-                    sig["name"],
-                    ai_result.get("raison","?")[:80]))
+                sig["ai_result"] = {}
+                sigs_validated_ai.append((sig, key))
         log("AI", "Filtre IA : {}/{} setups validés".format(len(sigs_validated_ai), len(sigs_raw)))
         sigs_raw = sigs_validated_ai
     # ─────────────────────────────────────────────────────────────────────
@@ -8266,9 +7930,7 @@ def handle_check_signal(uid, pair_side_key):
 
 def dispatch_cb(cb):
     """Gère tous les boutons inline Telegram."""
-    uid   = cb.get("from", {}).get("id")
-    if not uid:
-        return
+    uid   = cb["from"]["id"]
     uname = cb.get("from", {}).get("username", "")
     data  = cb.get("data", "")
     mid   = cb.get("message", {}).get("message_id")   # pour tg_edit (recheck)
@@ -8595,9 +8257,7 @@ def process_update(upd):
                             args=(uid, uname, fname), daemon=True).start()
                 return
 
-            uid   = msg.get("from", {}).get("id")
-            if not uid:
-                return
+            uid   = msg["from"]["id"]
             uname = msg.get("from", {}).get("username", "")
             fname = msg.get("from", {}).get("first_name", "")
             txt   = msg.get("text", "")
@@ -9019,7 +8679,6 @@ def main():
             ai_status = ("✅ Claude+Gemini" if CLAUDE_API_KEY and GEMINI_API_KEY else
                          "✅ Claude" if CLAUDE_API_KEY else
                          "✅ Gemini" if GEMINI_API_KEY else "⚠️ Sans IA")
-            cb_status = "🟢 Actif (seuil: {}x)".format(_CB_THRESHOLD)
             tg_send(ADMIN_ID,
                 "🤖 <b>AlphaBot PRO v21 — EN LIGNE !</b>\n\n"
                 "✅ DB initialisée\n"
@@ -9027,17 +8686,13 @@ def main():
                 "✅ Webhook configuré\n"
                 "⚡ Scan toutes les <b>{}s</b> — signaux directs\n\n"
                 "🕐 Session : <b>{}</b>  Score min : <b>{}</b>\n"
-                "🌍 Régime IA : <b>{}</b>\n"
-                "🔌 IA : <b>{}</b>\n"
-                "🛡 Circuit-breaker : <b>{}</b>\n\n"
+                "🌍 Régime IA : <b>{}</b>\n\n"
                 "📡 FREE {}/j  ·  PRO {}/j\n"
                 "🛠 /admin pour le panel".format(
                     port,
                     SCAN_SEC,
                     sl_l, sm_real,
                     AI_REG.get("regime", "Init"),
-                    ai_status,
-                    cb_status,
                     FREE_LIMIT, PRO_LIMIT),
                 kb=kb_main(False))
         threading.Thread(target=_init_bg, daemon=True).start()
