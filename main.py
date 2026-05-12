@@ -2391,13 +2391,13 @@ def _scan_inner():
         # ── Blocage signaux après 22h00 UTC ─────────────────────────
         now_check = datetime.now(timezone.utc).replace(tzinfo=None)
         if now_check.hour >= SIGNAL_CUTOFF_HOUR:
-            log("INFO", clr("Signal {} bloqué — après 22h00 UTC".format(sig["name"]), "yellow"))
+            log("INFO", clr("Signal {} bloqué — après 22h00 UTC".format(sig["name"]), "y"))
             continue
 
         # ── Throttle global : max 3/h, max 6/j, gap 15min ──────────
         ok_send, reason_throttle = _throttle_allowed(now_check)
         if not ok_send:
-            log("INFO", clr("Signal {} ignoré — {}".format(sig["name"], reason_throttle), "yellow"))
+            log("INFO", clr("Signal {} ignoré — {}".format(sig["name"], reason_throttle), "y"))
             continue
 
         sc  = sig.get("score", 0)
@@ -2927,7 +2927,7 @@ def _auto_verify_and_activate(uid, uname, tx_hash):
             log("PAY", clr("AUTO PRO: @{} {} — {}$".format(uname, uid, amount), "green"))
             return
         elif i < len(delays) - 1:
-            log("INFO", clr("TX non confirmé (tentative {}/3)".format(i + 1), "yellow"))
+            log("INFO", clr("TX non confirmé (tentative {}/3)".format(i + 1), "y"))
     # Toutes tentatives échouées → activation manuelle
     tg_send(uid,
         "\u23f3 <b>Vérification en cours côté admin</b>\n\n"
@@ -3000,7 +3000,7 @@ def _check_open_signals():
                         _notify_result(pair, side, entry, tp, sl, "SL", current)
             except: continue
     except Exception as e:
-        log("WARN", clr("Suivi signal échoué: {}".format(e), "yellow"))
+        log("WARN", clr("Suivi signal échoué: {}".format(e), "y"))
 
 
 def _do_backup():
@@ -3019,7 +3019,7 @@ def _do_backup():
                 datetime.now().strftime("%d/%m/%Y %H:%M")))
         log("INFO", clr("Backup DB envoyé à l'admin.", "green"))
     except Exception as e:
-        log("WARN", clr("Backup échoué: {}".format(e), "yellow"))
+        log("WARN", clr("Backup échoué: {}".format(e), "y"))
 
 
 def _fmt_daily_report(stats):
@@ -3290,7 +3290,7 @@ def _relance_inactifs():
             except: pass
         log("INFO", clr("Relance envoyée à {} inactifs.".format(len(inactifs[:20])), "dim"))
     except Exception as e:
-        log("WARN", clr("Relance échouée: {}".format(e), "yellow"))
+        log("WARN", clr("Relance échouée: {}".format(e), "y"))
 
 
 def _scan_and_send_inner():
@@ -3311,7 +3311,7 @@ def _scan_and_send_inner():
 
     active_markets = [m for m in MARKETS if not wknd or m.get("crypto", False)]
     if wknd:
-        log("INFO", clr("Week-end : {} marchés crypto".format(len(active_markets)), "yellow"))
+        log("INFO", clr("Week-end : {} marchés crypto".format(len(active_markets)), "y"))
 
     result_queue = Queue()
     threads = []
@@ -3396,13 +3396,13 @@ def _scan_and_send_inner():
         # ── Blocage signaux après 22h00 UTC ─────────────────────────
         now_check = datetime.now(timezone.utc).replace(tzinfo=None)
         if now_check.hour >= SIGNAL_CUTOFF_HOUR:
-            log("INFO", clr("Signal {} bloqué — après 22h00 UTC".format(sig["name"]), "yellow"))
+            log("INFO", clr("Signal {} bloqué — après 22h00 UTC".format(sig["name"]), "y"))
             continue
 
         # ── Throttle global : max 1/h, max 10/j, gap 30min ──────────
         ok_send, reason_throttle = _throttle_allowed(now_check)
         if not ok_send:
-            log("INFO", clr("Signal {} ignoré — {}".format(sig["name"], reason_throttle), "yellow"))
+            log("INFO", clr("Signal {} ignoré — {}".format(sig["name"], reason_throttle), "y"))
             continue
 
         # ── Format signal : AMD VIP si phase détectée ──────────────
@@ -3517,7 +3517,7 @@ def _scan_and_send_inner():
                 "/ref \u2192 {} filleuls = {} mois gratuit".format(PRO_PROMO, REF_TARGET, REF_MONTHS))
         tg_send(ADMIN_ID, "\u23f0 PRO expiré: @{} <code>{}</code>".format(uname or "?", uid))
     if expired:
-        log("WARN", clr("{} PRO expiré(s) → FREE".format(len(expired)), "yellow"))
+        log("WARN", clr("{} PRO expiré(s) → FREE".format(len(expired)), "y"))
 
     # ── Backup quotidien à DAILY_HOUR ─────────────────────────
     if int(hour_str) == DAILY_HOUR and date_str != getattr(_scan_and_send_inner, "_last_backup", ""):
@@ -4766,7 +4766,7 @@ def handle_txhash(uid, uname, tx_hash):
             log("PAY", clr("AUTO PRO: @{} {} — {}$".format(uname, uid, amount), "green"))
             return
         elif i < len(delays) - 1:
-            log("INFO", clr("TX non confirmé (tentative {}/3)".format(i + 1), "yellow"))
+            log("INFO", clr("TX non confirmé (tentative {}/3)".format(i + 1), "y"))
     tg_send(uid,
         "\u23f3 <b>Vérification en attente</b>\n\n"
         "La transaction n'est pas encore confirmée.\n"
@@ -4931,7 +4931,7 @@ def get_adaptive_score_min():
         "RANGING":       +2,  # Range → plus de faux signaux
         "VOLATILE":      +8,  # Volatile → exiger plus de confirmations
         "CRISIS":        +20, # Crise → quasi stop
-    }.get(reg, 0)
+    }.get("RANGING", 0)  # régime fixe (Binance IA supprimé)
 
     final = base + session_adj + regime_adj
 
@@ -6809,7 +6809,7 @@ def make_wh():
         def do_GET(self):
             path = self.path.split("?")[0]
             if path == "/health":
-                body = '{"status":"ok","cycles":' + str(_cycles_no_signal) + '}'.encode()
+                body = ('{"status":"ok","cycles":' + str(_cycles_no_signal) + '}').encode()
                 self.send_response(200)
                 self.send_header("Content-Type","application/json")
                 self.end_headers(); self.wfile.write(body)
