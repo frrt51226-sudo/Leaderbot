@@ -1,16 +1,13 @@
-
-
 #!/usr/bin/env python3
 """
-AlphaBot PRO v20 — Agent IA Adaptatif + Validateur Dual-AI
-════════════════════════════════════════════════════════════
+AlphaBot PRO v21.2.0 — Agent IA Adaptatif + Validateur Dual-AI
+════════════════════════════════════════════════════════════════
 • Bot Telegram FREE/PRO/VIP + paiement USDT auto
 • 20 marchés Forex/Métaux/Crypto/Indices/Pétrole
 • Cerveau ICT/SMC v2 + Analyse Multi-Timeframe
 • Tendance de fond : H1 (interne) | Entrée : M5 max M15
 • Si pas de setup parfait → l'agent allège les critères
   si tendance de fond + session + broker sont valides
-• Challenge IA 5$→500$ (Binance simulation)
 • ✨ NEW v19 : Validateur Dual-AI (Claude + Gemini)
     – Algo ICT/SMC  → Analyste technique (score /100)
     – Claude / Gemini / Les deux → Risk Manager (score /10 + proba %)
@@ -20,6 +17,11 @@ AlphaBot PRO v20 — Agent IA Adaptatif + Validateur Dual-AI
       · claude  = Claude uniquement
       · gemini  = Gemini uniquement
       · both    = les deux, moyenne des scores (vote majoritaire)
+• ✨ NEW v21.2.0 :
+    – pat_hh_failed()    : détection HH Failed / LL Failed (faiblesse de momentum)
+    – pat_fakeout_ict()  : Fakeout ICT sur Equal Highs/Lows (sweep institutionnel)
+    – TP2 dans tous les signaux agent_analyze (extension ×5 risque)
+    – pattern_score_m5 max +65 pts (vs +50 avant)
 • pip install requests anthropic google-generativeai
 """
 import json, ssl, time, threading, math, random, logging
@@ -80,7 +82,6 @@ ADMIN_ID     = int(os.getenv("ADMIN_ID", "6982051442"))
 USDT_ADDR    = "TJuPBihvzgb6ffGLw4WnqC33Av38kwU7XE"
 BROKER_LINK  = "https://one.exnessonelink.com/a/nb3fx0bpnm"
 DB_FILE      = "ab10.db"
-BINANCE_BASE = "https://fapi.binance.com/fapi/v1"
 
 # ── Liens d'invitation groupes (à mettre à jour si lien change) ─
 FREE_GROUP_LINK = os.getenv("FREE_GROUP_LINK", "https://t.me/+alphabotfree")   # ← remplace par ton vrai lien groupe FREE
@@ -91,16 +92,14 @@ FREE_LIMIT = 3;   PRO_LIMIT  = 10;  NB_AGENTS  = 20
 TRIAL_DAYS = 3;   SCAN_SEC   = 60;  DATA_MAX_AGE = 30
 DAILY_HOUR = 22;  WEEKLY_DAY = 6;   WEEKLY_HOUR = 21
 SIGNAL_CUTOFF_HOUR = 22   # Aucun signal envoyé à partir de 22h00 UTC
-FEE_TAKER  = 0.0004
-CHALLENGE_START = float(os.getenv("CHALLENGE_START", "5.0"))
-MAX_OPEN   = 3;  COOLDOWN_MIN = 20
-FLOOR_USD  = 2.0; DD_LIMIT = 0.20; DAILY_LOSS_LIMIT = 0.10
-AM_MULT    = 1.30; AM_MAX = 4
 
 # ── Throttle signaux ────────────────────────────────────────────
 MAX_SIG_PER_HOUR  = 1   # strict : 1 seul signal par heure glissante
 MAX_SIG_PER_DAY   = 10  # max global par jour (PRO: limité par PRO_LIMIT)
 MIN_GAP_BETWEEN   = 30  # minutes minimum entre 2 signaux consécutifs
+
+# Timestamp de démarrage — ignore les updates Telegram antérieurs
+_BOT_START_TIME   = time.time()
 
 MARKETS = [
     {"sym":"GC=F",     "name":"XAUUSD","cat":"METALS","pip":0.01,  "max_sp":70,"vol":5,"crypto":False},
@@ -125,7 +124,6 @@ MARKETS = [
     {"sym":"EURGBP=X", "name":"EURGBP","cat":"FOREX", "pip":0.0001,"max_sp":2,"vol":3,"crypto":False},
 ]
 CAT_EMO = {"FOREX":"💱","METALS":"🥇","CRYPTO":"₿","INDICES":"📈","OIL":"🛢"}
-PAIR_MAX_LEV = {"BTCUSDT":125,"ETHUSDT":100,"SOLUSDT":50,"BNBUSDT":75,"XRPUSDT":50}
 # ══════════════════════════════════════════════════════════════════════
 #  MODULE CLAUDE AI — VALIDATEUR EXPERT ICT/SMC
 #  Architecture : Algo (analyste) → Claude (risk mgr) → Script (juge)
@@ -855,8 +853,6 @@ from alphabot_pg import (
     # Paiements
     save_pay, pending_pays,
     db_save_payment, db_pending_payments,  # aliases
-    # Challenge
-    chal_get, chal_save,
     # Mémoire IA
     mem_query, mem_record, best_setups, worst_setups,
     # Aliases rétrocompatibilité v17
@@ -1210,11 +1206,56 @@ def pat_fake_breakout(c, bias):
         body = abs(last["c"] - last["o"])
         return last["c"] < prev["h"] and upper_wick > body * 1.5 and last["c"] < last["o"]
 
+def pat_hh_failed(c, bias):
+    """
+    HH Failed (Higher High raté) → signal de faiblesse.
+    BEARISH : le prix tente un nouveau HH mais échoue à clôturer au-dessus.
+    BULLISH : prix tente un nouveau LL mais échoue (LL Failed → force haussière).
+    """
+    if len(c) < 15: return False
+    H, L = swings(c[-15:], n=2)
+    if bias == "BEARISH":
+        if len(H) < 2: return False
+        h1, h2 = H[-2][1], H[-1][1]
+        # h2 dépasse h1 en wick mais clôture en dessous → échec
+        last = c[-1]
+        return (last["h"] > h1 and last["c"] < h1 and
+                abs(last["h"] - h1) / h1 < 0.005)
+    else:  # BULLISH : LL Failed
+        if len(L) < 2: return False
+        l1, l2 = L[-2][1], L[-1][1]
+        last = c[-1]
+        return (last["l"] < l1 and last["c"] > l1 and
+                abs(last["l"] - l1) / l1 < 0.005)
+
+def pat_fakeout_ict(c, bias):
+    """
+    Fakeout ICT : cassure d'un niveau clé suivie d'un retournement violent.
+    Différent du fake_breakout : spécifique aux niveaux de liquidité externe
+    (equal highs/lows, swing majeurs) avec rejet en bougie englobante.
+    """
+    if len(c) < 10: return False
+    eq_h, eq_l = eqh_eql(c)
+    last = c[-1]; prev = c[-2]
+    body_last = abs(last["c"] - last["o"])
+    body_prev = abs(prev["c"] - prev["o"])
+    if body_prev == 0: return False
+
+    if bias == "BULLISH" and eq_l:
+        # Prix casse EQL vers le bas puis remonte en englobant
+        return (prev["l"] < eq_l and last["c"] > eq_l and
+                last["c"] > last["o"] and body_last >= body_prev * 1.2)
+    if bias == "BEARISH" and eq_h:
+        # Prix casse EQH vers le haut puis redescend en englobant
+        return (prev["h"] > eq_h and last["c"] < eq_h and
+                last["c"] < last["o"] and body_last >= body_prev * 1.2)
+    return False
+
 def pattern_score_m5(c, bias):
     """
     Calcule le bonus de score total des patterns M5.
     Retourne (score_bonus, liste_badges).
-    Max +50 pts. Tous optionnels.
+    Max +65 pts. Tous optionnels.
     """
     if not c or len(c) < 20: return 0, []
     score = 0; badges = []
@@ -1230,7 +1271,13 @@ def pattern_score_m5(c, bias):
     if pat_fake_breakout(c, bias):
         score += 15
         badges.append("Fake BO ✓")
-    return min(score, 50), badges
+    if pat_hh_failed(c, bias):
+        score += 12
+        badges.append("HH Failed ✓" if bias=="BEARISH" else "LL Failed ✓")
+    if pat_fakeout_ict(c, bias):
+        score += 14
+        badges.append("Fakeout ICT ✓")
+    return min(score, 65), badges
 
 # ══════════════════════════════════════════════════════
 #  AGENT ANALYZE PRINCIPAL
@@ -1706,9 +1753,11 @@ def agent_analyze(m, score_min, news_ok, q):
                     rr   = round(gain_net / (risk + sp_p), 1) if (risk + sp_p) > 0 else 0
                     if rr >= rr_min:
                         ptp = gain_net / pip; psl = (risk + sp_p) / pip
+                        # TP2 = extension 1.618 × risque (objectif institutionnel)
+                        tp2 = f(e + risk * 5.0)
                         sig = {
                             "name": m["name"], "cat": m["cat"], "side": "BUY",
-                            "entry": f(e), "tp": f(tp), "sl": f(sl_p), "rr": rr,
+                            "entry": f(e), "tp": f(tp), "tp2": tp2, "sl": f(sl_p), "rr": rr,
                             "score": sc, "score_min": s_min, "atr": f(a), "sp": sp,
                             "bias": b, "btype": bt,
                             "g001": round(ptp * 0.01, 2), "g01": round(ptp * 0.1, 2),
@@ -1736,9 +1785,11 @@ def agent_analyze(m, score_min, news_ok, q):
                     rr   = round(gain_net / (risk + sp_p), 1) if (risk + sp_p) > 0 else 0
                     if rr >= rr_min:
                         ptp = gain_net / pip; psl = (risk + sp_p) / pip
+                        # TP2 = extension institutionnelle (5× risque)
+                        tp2 = f(e - risk * 5.0)
                         sig = {
                             "name": m["name"], "cat": m["cat"], "side": "SELL",
-                            "entry": f(e), "tp": f(tp), "sl": f(sl_p), "rr": rr,
+                            "entry": f(e), "tp": f(tp), "tp2": tp2, "sl": f(sl_p), "rr": rr,
                             "score": sc, "score_min": s_min, "atr": f(a), "sp": sp,
                             "bias": b, "btype": bt,
                             "g001": round(ptp * 0.01, 2), "g01": round(ptp * 0.1, 2),
@@ -1776,321 +1827,6 @@ def agent_analyze(m, score_min, news_ok, q):
 # ══════════════════════════════════════════════════════════════════
 #  BINANCE IA (Crypto futures)
 # ══════════════════════════════════════════════════════════════════
-AI_C   = defaultdict(lambda: defaultdict(deque))
-AI_P   = {}
-AI_PRS = []
-AI_REG = {"regime":"RANGING","min_score":72,"risk_mult":1.0,"lev_cap":15,"label":"Init"}
-AI_OT  = {}
-AI_TC  = 0
-AI_CD  = {}
-_ai_lk = threading.Lock()
-EXCH   = {}; EXCH_TS = 0
-
-def b_get(ep, p=None):
-    try:
-        url="{}{}?{}".format(BINANCE_BASE,ep,urllib.parse.urlencode(p or {}))
-        return json.loads(http_get(url,timeout=8))
-    except: return None
-
-def bn_price(sym):
-    d=b_get("/ticker/price",{"symbol":sym}); return float(d["price"]) if d and "price" in d else None
-
-def bn_klines(sym,tf="5m",lim=60):
-    d=b_get("/klines",{"symbol":sym,"interval":tf,"limit":lim})
-    if not d or not isinstance(d,list): return None
-    return [{"ts":int(k[0]),"open":float(k[1]),"high":float(k[2]),"low":float(k[3]),"close":float(k[4]),"vol":float(k[5])} for k in d]
-
-def bn_fund(sym):
-    d=b_get("/premiumIndex",{"symbol":sym}); return float(d["lastFundingRate"])*100 if d and "lastFundingRate" in d else None
-
-def refresh_exch():
-    global EXCH_TS
-    try:
-        d=json.loads(http_get("{}/exchangeInfo".format(BINANCE_BASE),timeout=12))
-        for s in d.get("symbols",[]):
-            nm=s["symbol"]; info={"step":1.0,"minQty":0.0,"minNot":5.0,"tick":0.01}
-            for f in s.get("filters",[]):
-                if f["filterType"]=="LOT_SIZE": info["step"]=float(f["stepSize"]); info["minQty"]=float(f["minQty"])
-                elif f["filterType"]=="MIN_NOTIONAL": info["minNot"]=float(f.get("notional",5.0))
-                elif f["filterType"]=="PRICE_FILTER": info["tick"]=float(f["tickSize"])
-            EXCH[nm]=info
-        EXCH_TS=time.time(); log("AI",clr("Exchange info OK ({})".format(len(EXCH)),"g"))
-    except Exception as e: log("WARN","[EXCH] {}".format(e))
-
-def lot_calc(sym,risk,sld,entry,lev):
-    info=EXCH.get(sym,{"step":0.001,"minQty":0.001,"minNot":5.0})
-    step=info["step"]; minq=info["minQty"]; minn=info["minNot"]
-    p=max(0,round(-math.log10(step))) if step>0 else 3
-    qty=round(math.floor((risk/sld if sld>0 else 0)/step)*step,p); qty=max(qty,minq)
-    not_=qty*entry
-    if not_<minn: qty=round(math.floor(minn/entry*1.02/step)*step,p); qty=max(qty,minq); not_=qty*entry
-    ft=not_*FEE_TAKER*2
-    return {"qty":qty,"not":round(not_,4),"ft":round(ft,6),"rr":round(qty*sld+ft,4)}
-
-def regime_detect():
-    global AI_REG
-    c4=list(AI_C["BTCUSDT"].get("4h",deque()))
-    if len(c4)<20: return
-    recent=c4[-20:]
-    cl=[c["close"] for c in recent]; hi=[c["high"] for c in recent]; lo=[c["low"] for c in recent]
-    a_raw=sum(h-l for h,l in zip(hi,lo))/len(recent)
-    a_pct=a_raw/cl[-1]*100 if cl[-1]>0 else 0
-    mom=(cl[-1]-cl[0])/cl[0]*100 if cl[0]>0 else 0
-    mv=max(abs(c["close"]-c["open"])/c["open"]*100 for c in recent[-5:] if c["open"]>0)
-    if a_pct>5 or mv>8:    r="CRISIS";  ms=95; rm=0.3; lc=3
-    elif a_pct>3:           r="VOLATILE";ms=85; rm=0.6; lc=7
-    elif abs(mom)>3:        r="TRENDING";ms=70; rm=1.2; lc=20
-    elif (max(hi)-min(lo))/sum(cl)*len(cl)*100<3: r="ACCUM"; ms=76; rm=1.0; lc=15
-    else:                   r="RANGING"; ms=78; rm=0.8; lc=10
-    AI_REG={"regime":r,"min_score":ms,"risk_mult":rm,"lev_cap":lc,
-             "atr_pct":round(a_pct,2),"mom":round(mom,2),"label":r}
-    log("AI",clr("Régime: {} ATR:{:.1f}% Mom:{:.1f}%".format(r,a_pct,mom),"c"))
-
-def refresh_ai():
-    global AI_PRS
-    try:
-        d=b_get("/ticker/24hr")
-        if d and isinstance(d,list):
-            u=[t for t in d if t["symbol"].endswith("USDT") and "_" not in t["symbol"]]
-            u.sort(key=lambda t:float(t.get("quoteVolume",0)),reverse=True)
-            AI_PRS=[t["symbol"] for t in u[:25]]
-    except: pass
-    for sym in AI_PRS[:20]:
-        for tf,lim in [("5m",60),("15m",40),("1h",48),("4h",50)]:
-            c=bn_klines(sym,tf,lim)
-            if c: AI_C[sym][tf]=deque(c,maxlen=lim)
-            if tf=="5m" and c: AI_P[sym]=c[-1]["close"]
-        time.sleep(0.07)
-    regime_detect()
-    log("AI",clr("Binance {} paires OK".format(len(AI_PRS)),"g"))
-
-def ai_btc_bias():
-    s={"BULL":0,"BEAR":0}
-    for tf,w in [("5m",1),("1h",2),("4h",3)]:
-        c=list(AI_C["BTCUSDT"].get(tf,deque()))
-        if len(c)<5: continue
-        cl=[x["close"] for x in c[-10:]]
-        d=(cl[-1]-cl[0])/cl[0]*100 if cl[0]>0 else 0
-        if d>0.3: s["BULL"]+=w
-        elif d<-0.3: s["BEAR"]+=w
-    if s["BULL"]>s["BEAR"]+1: return "BULL"
-    if s["BEAR"]>s["BULL"]+1: return "BEAR"
-    return "RANGE"
-
-def ai_risk(bal,sc,am,sess):
-    if bal<15: b=0.10
-    elif bal<30: b=0.09
-    elif bal<75: b=0.08
-    else: b=0.06
-    if sc>=90: b*=1.2
-    elif sc>=80: b*=1.1
-    b*=AI_REG.get("risk_mult",1.0)
-    # Réduire automatiquement le sizing en régime risqué
-    regime = AI_REG.get("regime", "RANGING")
-    if regime == "VOLATILE": b *= 0.6
-    elif regime == "CRISIS":  b *= 0.3
-    elif regime == "RANGING": b *= 0.85
-    if "KZ" in sess or "OVERLAP" in sess: b*=1.1
-    b*=(AM_MULT**am)
-    return round(min(bal*b, bal*0.20),4)
-
-def ai_lev(sym,bal,sc):
-    if bal<15: base=5
-    elif bal<30: base=7
-    elif bal<75: base=10
-    else: base=15
-    if sc>=88: base=min(base+2,25)
-    return min(base,AI_REG.get("lev_cap",15),PAIR_MAX_LEV.get(sym,20))
-
-def ai_scan_sym(sym,bias,bal):
-    c5=list(AI_C[sym].get("5m",deque()))
-    c15=list(AI_C[sym].get("15m",deque()))
-    if len(c5)<12: return None
-    ch=chal_get()
-    if ch["balance"]<FLOOR_USD: return None
-    dop=ch.get("day_open",ch["balance"])
-    if dop>0 and (dop-ch["balance"])/dop>=DD_LIMIT: return None
-    # Daily loss limit : stopper si -10% sur la journée
-    if dop>0 and (dop-ch["balance"])/dop>=DAILY_LOSS_LIMIT:
-        log("WARN", clr("Daily loss limit atteint — signaux suspendus pour aujourd'hui", "red"))
-        return None
-    sn,_,_,_=get_session()
-    if sn=="OFF": return None
-    reg=AI_REG
-    cd=AI_CD.get(sym)
-    if cd and datetime.now(timezone.utc)<cd: return None
-    with _ai_lk:
-        if any(t["symbol"]==sym and t["status"]=="open" for t in AI_OT.values()): return None
-    a=max(c5[-1]["close"]-c5[-1]["open"] for _ in [1]); price=c5[-1]["close"]
-
-    # ── Détection OB simple ───────────────────────────
-    n=len(c5); a_v=sum(abs(x["close"]-x["open"]) for x in c5[-14:])/14 if len(c5)>=14 else 0.01
-    sig=None; strat="OB"
-
-    for i in range(n-3,max(n-12,2),-1):
-        c0,c1,c2=c5[i-2],c5[i-1],c5[i]
-        b2=abs(c1["close"]-c1["open"]); r=c1["high"]-c1["low"]
-        if r==0: continue
-        bull_i=c2["close"]>c2["open"] and (c2["close"]-c2["open"])>b2*1.0
-        bear_i=c2["close"]<c2["open"] and (c2["open"]-c2["close"])>b2*1.0
-        if c1["close"]<c1["open"] and bull_i and bias!="BEAR" and c1["low"]<=price<=c1["high"]*1.004:
-            sl=c1["low"]*0.998; sld=price-sl
-            if 0<sld<=a_v*4:
-                sig={"side":"BUY","entry":price,"sl":sl,"tp1":price+sld*2.5,"tp2":price+sld*5,"sc":68}; break
-        if c1["close"]>c1["open"] and bear_i and bias!="BULL" and c1["low"]*0.996<=price<=c1["high"]:
-            sl=c1["high"]*1.002; sld=sl-price
-            if 0<sld<=a_v*4:
-                sig={"side":"SELL","entry":price,"sl":sl,"tp1":price-sld*2.5,"tp2":price-sld*5,"sc":68}; break
-
-    # ── Liq sweep simple ─────────────────────────────
-    if not sig:
-        rec=c5[n-15:n-3] if n>=15 else c5
-        sh=max(x["high"] for x in rec); sl2=min(x["low"] for x in rec)
-        if any(x["high"]>sh for x in c5[n-5:n-1]) and price<sh and bias!="BULL":
-            sl_v=max(x["high"] for x in c5[n-5:n])*1.002; sld=sl_v-price
-            if 0<sld<=a_v*4:
-                sig={"side":"SELL","entry":price,"sl":sl_v,"tp1":price-sld*3,"tp2":price-sld*6,"sc":72}; strat="LIQ"
-        if not sig and any(x["low"]<sl2 for x in c5[n-5:n-1]) and price>sl2 and bias!="BEAR":
-            sl_v=min(x["low"] for x in c5[n-5:n])*0.998; sld=price-sl_v
-            if 0<sld<=a_v*4:
-                sig={"side":"BUY","entry":price,"sl":sl_v,"tp1":price+sld*3,"tp2":price+sld*6,"sc":72}; strat="LIQ"
-
-    if not sig: return None
-
-    sld=abs(sig["entry"]-sig["sl"])
-    sc=sig["sc"]+sess_bonus(sn)
-
-    # Mémoire
-    w,l,_=mem_query("{}|{}|{}".format(strat,sn,reg.get("regime","?")))
-    t=w+l
-    if t>=3:
-        wr=w/t
-        if wr>0.85: sc+=8
-        elif wr<0.45: sc-=12
-
-    min_sc=reg.get("min_score",72)
-    if sc<min_sc: return None
-
-    risk=ai_risk(bal,sc,ch["am_cycle"],sn)
-    lev=ai_lev(sym,bal,sc)
-    lot=lot_calc(sym,risk,sld,sig["entry"],lev)
-    if not lot["qty"]: return None
-
-    return {"sym":sym,"side":sig["side"],"entry":sig["entry"],"sl":sig["sl"],
-            "tp1":sig["tp1"],"tp2":sig["tp2"],"sc":sc,"rr":round(abs(sig["tp1"]-sig["entry"])/sld,1),
-            "risk":risk,"lev":lev,"qty":lot["qty"],"not":lot["not"],
-            "ft":lot["ft"],"rr_real":lot["rr"],
-            "strat":strat,"sess":sn,"regime":reg.get("regime","?"),
-            "am":ch["am_cycle"]}
-
-def ai_full_scan():
-    bias=ai_btc_bias(); ch=chal_get(); bal=ch["balance"]
-    res=[]
-    for sym in AI_PRS[:20]:
-        s=ai_scan_sym(sym,bias,bal)
-        if s: res.append(s)
-    res.sort(key=lambda x:(-x["sc"],-x["rr"]))
-    return res
-
-def ai_open(setup):
-    global AI_TC
-    AI_TC+=1; tid=AI_TC; sym=setup["sym"]
-    trade={"id":tid,"symbol":sym,"side":setup["side"],
-           "entry":setup["entry"],"sl":setup["sl"],"sl0":setup["sl"],
-           "tp1":setup["tp1"],"tp2":setup["tp2"],
-           "risk":setup["risk"],"rr":setup["rr"],"lev":setup["lev"],
-           "qty":setup["qty"],"not":setup["not"],"ft":setup["ft"],
-           "strat":setup["strat"],"sc":setup["sc"],"am":setup["am"],
-           "sess":setup["sess"],"regime":setup["regime"],
-           "status":"open","be":False,"tp1_hit":False,
-           "open_ts":datetime.now(timezone.utc).isoformat()}
-    with _ai_lk:
-        AI_OT[tid]=trade
-        AI_CD[sym]=datetime.now(timezone.utc)+timedelta(minutes=COOLDOWN_MIN)
-    ch=chal_get(); bal=ch["balance"]
-    d="🟢 LONG" if setup["side"]=="BUY" else "🔴 SHORT"
-    prog=chal_prog(ch)
-    tg_send(ADMIN_ID,
-        "<b>━━━ TRADE IA #{} ━━━</b>\n{} <b>{}</b>\n"
-        "🎯 Score:{}/100  RR:1:{}\n"
-        "📍 {:.5f}  🛑 {:.5f}\n"
-        "✅ TP1:{:.5f}  🏆 TP2:{:.5f}\n"
-        "📦 Qty:{}  {}$  Lev:{}x\n"
-        "💸 Frais:{:.5f}$  Risk:{:.4f}$\n"
-        "🕐 {}  🌍 {}  📊 {}\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "{}\n<b>@leaderOdg</b>".format(
-            tid,d,sym,setup["sc"],setup["rr"],
-            setup["entry"],setup["sl"],setup["tp1"],setup["tp2"],
-            setup["qty"],round(setup["not"],2),setup["lev"],
-            setup["ft"],setup["risk"],
-            setup["sess"],setup["regime"],setup["strat"],prog))
-    if setup["sc"]>=78:
-        for puid in pro_users(): tg_send(puid,"<b>📊 Signal IA #{} — {} {}</b>\n{} Score:{}/100 RR:1:{}\n📍 {:.5f} → TP:{:.5f} SL:{:.5f}\n<b>@leaderOdg</b>".format(tid,sym,d,setup["strat"],setup["sc"],setup["rr"],setup["entry"],setup["tp1"],setup["sl"])); time.sleep(0.04)
-    log("AI",clr("#{} {} {} Sc:{} Qty:{} Risk:{:.4f}$".format(tid,sym,"L" if setup["side"]=="BUY" else "S",setup["sc"],setup["qty"],setup["risk"]),"g"))
-    return tid
-
-def ai_check():
-    with _ai_lk: trades=list(AI_OT.values())
-    ch=chal_get()
-    for t in trades:
-        if t["status"]!="open": continue
-        price=bn_price(t["symbol"])
-        if price is None: continue
-        side=t["side"]; entry=t["entry"]; sl=t["sl"]; tp1=t["tp1"]; tp2=t["tp2"]
-        sld0=abs(entry-t["sl0"])
-        rrc=((price-entry)/sld0 if side=="BUY" else (entry-price)/sld0) if sld0>0 else 0
-        if rrc>=1.0 and not t["be"]:
-            be=entry*1.0002 if side=="BUY" else entry*0.9998
-            with _ai_lk: t["sl"]=be; t["be"]=True
-            tg_send(ADMIN_ID,"<b>🔒 BE #{} — {}</b>\nRR:{:.2f} SL→{:.5f}\n<b>@leaderOdg</b>".format(t["id"],t["symbol"],rrc,be))
-        hit_tp1=(price>=tp1 if side=="BUY" else price<=tp1)
-        if hit_tp1 and not t["tp1_hit"]:
-            p=round(t["risk"]*rrc-t["ft"],4)
-            with _ai_lk: t["tp1_hit"]=True; t["sl"]=tp1
-            tg_send(ADMIN_ID,"<b>✅ TP1 #{} — {}</b>\n+{:.4f}$ SL→TP2:{:.5f}\n<b>@leaderOdg</b>".format(t["id"],t["symbol"],p,tp2))
-        hit_sl=(price<=sl if side=="BUY" else price>=sl)
-        hit_tp2=(price>=tp2 if side=="BUY" else price<=tp2)
-        if hit_sl or hit_tp2:
-            gross=t["risk"]*(rrc if (hit_tp2 or t["tp1_hit"]) else -1)
-            net=round(gross-t["ft"],4)
-            result="WIN" if (hit_tp2 or (t["tp1_hit"] and hit_sl)) else ("BE" if t["be"] else "LOSS")
-            with _ai_lk: t.update({"status":"closed","exit":price,"pnl":net,"result":result,"close_ts":datetime.now(timezone.utc).isoformat()})
-            dur=""
-            try:
-                od=datetime.fromisoformat(t.get("open_ts",""))
-                dur="{}min".format(int((datetime.now(timezone.utc)-od).total_seconds()/60))
-            except: pass
-            am_old=ch["am_cycle"]
-            if result=="WIN": ch["w_streak"]=ch.get("w_streak",0)+1; ch["l_streak"]=0; ch["am_cycle"]=0 if ch["w_streak"]>=AM_MAX else min(ch["am_cycle"]+1,AM_MAX)
-            else: ch["l_streak"]=ch.get("l_streak",0)+1; ch["am_cycle"]=0; ch["w_streak"]=0
-            ch["balance"]=round(ch["balance"]+net,4); ch["today_pnl"]=round(ch.get("today_pnl",0)+net,4)
-            if net>0: ch["today_w"]=ch.get("today_w",0)+1
-            else: ch["today_l"]=ch.get("today_l",0)+1
-            ch["best_rr"]=max(ch.get("best_rr",0),float(t["rr"])); ch["peak"]=max(ch.get("peak",ch["balance"]),ch["balance"])
-            chal_save(ch)
-            mem_record("{}|{}|{}".format(t.get("strat","?"),t.get("sess","?"),t.get("regime","?")),result,net)
-            hdr={"WIN":"✅ GAGNANT","BE":"🔒 BE","LOSS":"❌ PERDANT"}[result]
-            tg_send(ADMIN_ID,"<b>━━━ {} #{} ━━━</b>\n{} <b>{}</b>\n📍{:.5f}→<b>{:.5f}</b>\n💵 {:+.4f}$  Frais:-{:.5f}$\n📐 RR:{:.2f}  ⏱{}\n🔄 AM:{}→{}\n{}\n<b>@leaderOdg</b>".format(
-                hdr,t["id"],"🟢" if side=="BUY" else "🔴",t["symbol"],
-                entry,price,net,t["ft"],rrc,dur,am_old,ch["am_cycle"],chal_prog(ch)))
-            if result=="WIN": tg_send(CHANNEL_ID,"<b>✅ WIN IA #{} — {}</b>\n+{:.4f}$ RR:{:.2f}\nSolde:{:.4f}$\n<b>@leaderOdg</b>".format(t["id"],t["symbol"],net,rrc,ch["balance"]))
-
-def chal_prog(c):
-    bal=c["balance"]; start=c["start_bal"]; target=start*100
-    prog=min(100,bal/target*100) if target>0 else 0
-    bar="█"*int(prog/5)+"░"*(20-int(prog/5))
-    return "[{}] {:.1f}%\n{:.4f}$ → {:.0f}$".format(bar,prog,bal,target)
-
-# ══════════════════════════════════════════════════════
-#  FORMATAGE SIGNAUX
-# ══════════════════════════════════════════════════════
-MODE_LABELS = {
-    "NORMAL":"ICT/SMC ✓","EMA_BOUNCE":"EMA Bounce 📊",
-    "MOMENTUM":"Momentum 🚀","STRUCTURE_PLAY":"Structure H1 🏗",
-    "RANGE_BREAK":"Cassure Range 📐","TREND_FOLLOW":"Trend Following 📈",
-    "OB":"Order Block","LIQ":"Liquidity Sweep",
-}
 
 def _score_label(sc):
     """Retourne une évaluation textuelle du score de confiance."""
@@ -2135,6 +1871,8 @@ def _trade_reason(sig):
     if "Breakout" in b: parts.append("breakout retest")
     if "H&S" in b or "IH&S" in b: parts.append("Head&Shoulders")
     if "Double" in b: parts.append("double top/bot")
+    if "HH Failed" in b or "LL Failed" in b: parts.append("HH/LL failed")
+    if "Fakeout ICT" in b: parts.append("fakeout ICT")
     if "Macro" in b:  parts.append("alignement macro")
     bt = sig.get("btype","")
     if bt: parts.insert(0, "biais H1 ({})".format(bt))
@@ -2197,7 +1935,8 @@ def fmt_pro(s, news, sl_label):
         "",
         "┌─ <b>NIVEAUX</b> ──────────────────────────",
         "│  Entree : <code>{}</code>".format(s["entry"]),
-        "│  TP     : <code>{}</code>".format(s["tp"]),
+        "│  TP1    : <code>{}</code>  (RR 1:{})".format(s["tp"], s["rr"]),
+        "│  TP2    : <code>{}</code>  🎯 extension".format(s.get("tp2", "—")),
         "│  SL     : <code>{}</code>".format(s["sl"]),
         "│  RR     : <b>1:{}</b>".format(s["rr"]),
         "└──────────────────────────────────",
@@ -2294,11 +2033,8 @@ def fmt_scan(results, news, scan_t, sl_l, sm, nb):
     - Tableau par catégorie avec score + M5 status
     - Indicateur qualité (ELITE / PREMIUM / SOLIDE / -)
     - Résumé des rejets par cause (pour debug rapide)
-    - Challenge IA inline
     """
     st  = daily_stats()
-    ch  = chal_get()
-    reg = AI_REG
     sn, _, sess_label, wknd = get_session()
     news_ico = "✅" if "✅" in news else "⚠️"
 
@@ -2338,13 +2074,8 @@ def fmt_scan(results, news, scan_t, sl_l, sm, nb):
     lines = [
         "🔍 <b>SCAN {} UTC</b>  ·  {}".format(scan_t, sess_label),
         sep,
-        # Ligne 1 : session + score min + news
         "📡 Session : <b>{}</b>  ·  Score min : <b>{}</b>  ·  News : {}".format(
             sl_l, sm, news_ico),
-        # Ligne 2 : challenge IA + régime
-        "🤖 IA : <b>{:.4f}$</b>  ·  Régime : <b>{}</b>".format(
-            ch["balance"], reg.get("regime", "?")),
-        # Ligne 3 : stats du jour
         "📊 Aujourd'hui : <b>{}✅  {}❌  {}🔄</b>  ({} signaux)  💵 +${}".format(
             st["wins"], st["losses"], st.get("open", 0), st["n"], st["g1"]),
         "",
@@ -2734,7 +2465,7 @@ def _scan_inner():
                 "Marchés actifs mais conditions insuffisantes (score < 85 ou liquidité absente).\n"
                 "Prochaine analyse dans {}s.".format(scan_t, SCAN_SEC))
     # ── Rapport soir 22h UTC — UNE SEULE FOIS ───────────────────────
-    if int(hs) == DAILY_HOUR and _last_d != ds and not rep_sent(ds):
+    if int(hs) == DAILY_HOUR and _last_d != ds and not rep_sent(ds, "daily_reports", "report_date"):
         st = daily_stats(ds)
         if st["n"] > 0:
             d_pro  = fmt_daily(st, is_pro=True)
@@ -2786,18 +2517,8 @@ def _scan_inner():
     if int(hs)%6==0 and ds+hs!=getattr(_scan_inner,"_lr",""):
         _scan_inner._lr=ds+hs; threading.Thread(target=relance_inactifs,daemon=True).start()
     threading.Thread(target=check_open_sigs,daemon=True).start()
-    threading.Thread(target=ai_scan_cycle,daemon=True).start()
     # Vérifier fin de session → rapport automatique
     # Session end reports désactivés — rapport soir uniquement
-
-def ai_scan_cycle():
-    try:
-        setups=ai_full_scan()
-        if setups:
-            best=setups[0]
-            log("AI",clr("Setup {} {} Sc:{} RR:{}".format(best["sym"],"L" if best["side"]=="BUY" else "S",best["sc"],best["rr"]),"g"))
-            ai_open(best)
-    except Exception as e: log("WARN","[AI] {}".format(e))
 
 def broadcast_new_version():
     """Envoie un message de mise à jour à TOUS les utilisateurs avec leur lien de parrainage."""
@@ -2961,7 +2682,6 @@ def handle_pay_confirm(uid,uname):
             time.sleep(delay); ok,amt=verify_tx(tx)
             if ok:
                 db_pro(uid,"USDT_AUTO",days=None); tg_sticker(uid,STK_WIN)
-                tg_send(uid,"🎉 <b>PAIEMENT CONFIRMÉ!</b>\n\n✅ {}$ USDT reçu!\n💎 <b>PRO À VIE!</b>\n✅ Max {} signaux/j\n✅ Agent IA Binance inclus!".format(amt,PRO_LIMIT))
                 tg_send(ADMIN_ID,"🟢 AUTO PRO: @{} <code>{}</code> {}$ ✅".format(uname or "?",uid,amt))
                 log("PAY",clr("AUTO PRO: @{} {}$".format(uname,amt),"g")); return
             if i<2: log("INFO",clr("TX non confirmé {}/3".format(i+1),"y"))
@@ -3011,17 +2731,18 @@ def _group_invite_msg(pro=False):
 
 def send_welcome(uid, uname):
     db_register(uid, uname, tg_fn=tg_send)
-    p = is_pro(uid); ch = chal_get()
     plan = get_plan(uid)
     tg_sticker(uid, STK_W)
+    p = is_pro(uid)
+    sn, sm, sl_l, wknd = get_session()
     tg_send(uid,
-        "🤖 <b>AlphaBot PRO v17 — Agent IA Adaptatif</b>\n"+"═"*22+"\n\n"
+        "🤖 <b>AlphaBot PRO v21 — Signaux ICT/SMC</b>\n"+"═"*22+"\n\n"
         "📡 20 marchés : Forex · Or · BTC · Indices · Pétrole\n"
         "🧠 ICT/SMC · Tendance H1 · Entrée M5/M15\n"
-        "🌍 Régime: <b>{}</b>  ·  Challenge: <b>{:.4f}$</b>\n\n"
+        "🕐 Session : <b>{}</b>\n\n"
         "✅ Plan: <b>{}</b>\n\nSélectionne une option ↓".format(
-            AI_REG.get("regime","?"), ch["balance"], plan),
-        kb=kb_main(p))
+            sl_l, "PRO" if p else "FREE"),
+        kb=kb_reply())
     # Invitation groupe après le welcome (délai 2s)
     time.sleep(2)
     inv_msg, inv_kb = _group_invite_msg(p)
@@ -3054,25 +2775,18 @@ def send_account(uid,uname,forced=None):
         ), kb=kb_main(plan in ("PRO","VIP")))
 
 def send_pay(uid):
-    tg_send(uid,"💎 <b>PASSER EN PRO</b>\n"+"═"*22+"\n\n✅ {} signaux/jour\n✅ 20 marchés + crypto\n✅ \n✅ Agent IA Binance\n✅ Challenge 5$→500$\n\n💵 <b>PRIX: {}$ USDT TRC20</b>\n\n📤 Envoie sur:\n<code>{}</code>\n\nPuis clique <b>J'ai payé ✅</b>".format(PRO_LIMIT,PRO_PRICE,USDT_ADDR),
-        kb={"inline_keyboard":[[{"text":"✅ J'ai payé","callback_data":"pay_submitted"}],[{"text":"❓ Aide @leaderOdg","url":"https://t.me/leaderOdg"}],[{"text":"◀️ Retour","callback_data":"start"}]]})
-
-def send_challenge(uid):
-    ch=chal_get(); reg=AI_REG
-    w=ch.get("today_w",0); l=ch.get("today_l",0); tot=w+l
-    wr=round(w/tot*100) if tot>0 else 0
-    open_t=sum(1 for t in AI_OT.values() if t["status"]=="open")
-    tg_send(uid,"🏆 <b>CHALLENGE IA — Agent Alpha v10</b>\n"+"═"*22+"\n\n"
-        "{}\n\n"
-        "📊 Aujourd'hui: W:{} L:{} WR:{}%\n"
-        "📈 PnL jour: {:+.4f}$\n"
-        "🔄 AM Cycle: {}/4\n"
-        "📂 Positions: {}/{}\n\n"
-        "🌍 Régime: <b>{}</b> — {}\n"
-        "⚡ : actif\n\n"
-        "⚠️ Simulation — aucun ordre réel".format(
-            chal_prog(ch),w,l,wr,ch.get("today_pnl",0),ch["am_cycle"],open_t,MAX_OPEN,
-            reg.get("regime","?"),reg.get("label","?")),kb=kb_back())
+    tg_send(uid,
+        "💎 <b>PASSER EN PRO</b>\n"+"═"*22+"\n\n"
+        "✅ {} signaux/jour\n✅ 20 marchés + crypto week-end\n"
+        "✅ Rapports quotidiens + hebdo\n\n"
+        "💵 <b>PRIX: {}$ USDT TRC20</b>\n\n"
+        "📤 Envoie sur:\n<code>{}</code>\n\n"
+        "Puis clique <b>J'ai payé ✅</b>".format(PRO_LIMIT, PRO_PRICE, USDT_ADDR),
+        kb={"inline_keyboard":[
+            [{"text":"✅ J'ai payé","callback_data":"pay_submitted"}],
+            [{"text":"❓ Aide @leaderOdg","url":"https://t.me/leaderOdg"}],
+            [{"text":"◀️ Retour","callback_data":"start"}]
+        ]})
 
 def send_rapports(uid):
     st=daily_stats(); ws=weekly_stats()
@@ -3080,10 +2794,11 @@ def send_rapports(uid):
     sw=ws["n"]; ww=ws["wins"]; wr_w=int(ww/sw*100) if sw else 0
     lines=["📈 <b>RAPPORTS DE PERFORMANCE</b>","═"*22,"","🔥 <b>AUJOURD'HUI</b>",""]
     if sd>0:
-        lines+=["📡 {} signaux  ·  {} ✅  ·  {}% réussite".format(sd,wd_,wr_d),
-                "💵 Lot 0.01: <b>+${}</b>".format(st["g001"]),
-                "💰 Lot 1.00: <b>+${}</b>".format(st["g1"]),
-                "" if improv_cnt else "",""]
+        lines+=[
+            "📡 {} signaux  ·  {} ✅  ·  {}% réussite".format(sd,wd_,wr_d),
+            "💵 Lot 0.01: <b>+${}</b>".format(st["g001"]),
+            "💰 Lot 1.00: <b>+${}</b>".format(st["g1"]),
+            ""]
     else: lines.append("⏳ Aucun signal aujourd'hui")
     lines+=["","━"*20,"","🔥🔥 <b>CETTE SEMAINE</b>",""]
     if sw>0: lines+=["📡 {} signaux  ·  {} ✅  ·  {}% réussite".format(sw,ww,wr_w),"💵 +${}  ·  💰 +${}".format(ws["g001"],ws["g1"])]
@@ -3094,23 +2809,20 @@ def send_rapports(uid):
 def send_admin_full(uid):
     if uid!=ADMIN_ID: tg_send(uid,"❌ Accès refusé."); return
     total,pro,sigs,pays,g1d=global_stats(); sn,sm,sl_l,_=get_session(); sm=get_adaptive_score_min()
-    st=daily_stats(); pend=pending_pays(); ch=chal_get(); reg=AI_REG
+    st=daily_stats(); pend=pending_pays()
     tg_sticker(uid,STK_PRO)
-    tg_send(uid,"🛡 <b>ADMIN — AlphaBot v10</b>\n"+"═"*22+"\n\n"
+    tg_send(uid,
+        "🛡 <b>ADMIN — AlphaBot PRO v21</b>\n"+"═"*22+"\n\n"
         "👥 Membres: <b>{}</b>  ·  PRO: <b>{}</b>  ·  FREE: <b>{}</b>\n"
         "📡 Signaux: <b>{}</b>  ·  Gains: <b>+${}</b>  ·  Payés: <b>{}</b>\n"
         "⏳ En attente: <b>{}</b>{}\n\n"
-        "🤖 <b>IA:</b> {:.4f}$ AM:{}/4 W:{} L:{}\n"
-        "🌍 Régime: <b>{}</b>  Positions: {}/{}\n\n"
         "🕐 Session: {}  Score min: {}\n\n"
         "/activate /degrade /scan /debug /stats /membres".format(
             total,pro,total-pro,st["n"],st["g1"],pays,len(pend),
             "  ⚠️ À valider!" if pend else "",
-            ch["balance"],ch["am_cycle"],ch.get("today_w",0),ch.get("today_l",0),
-            reg.get("regime","?"),sum(1 for t in AI_OT.values() if t["status"]=="open"),MAX_OPEN,sl_l,sm),
+            sl_l, sm),
         kb={"inline_keyboard":[
             [{"text":"💰 Paiements","callback_data":"adm_pays"},{"text":"📡 Scan forcé","callback_data":"adm_scan"}],
-            [{"text":"🏆 Challenge IA","callback_data":"challenge"},{"text":"📈 Rapports","callback_data":"rapports"}],
             [{"text":"🌍 État marchés","callback_data":"adm_markets"}],
         ]})
 
@@ -3145,7 +2857,6 @@ def send_guide(uid):
         "  • Régime marché auto (6 types)\n"
         "  • Adaptation du risque en temps réel\n"
         "  • Mémoire des setups gagnants\n"
-        "  • Challenge 5$→500$ géré automatiquement\n\n"
         "━"*20+"\n"
         "📊 FREE : {}/j  ·  💎 PRO : jusqu\'à {}/j\n\n"
         "🔥 <b>Pourquoi AlphaBot est différent ?</b>\n"
@@ -5198,7 +4909,6 @@ def get_adaptive_score_min():
     - Régime TRENDING          → score min BAISSÉ  (tendance claire)
     """
     sn, sm, sl, wknd = get_session()
-    reg  = AI_REG.get("regime", "RANGING")
     base = sm  # score de base de la session
 
     # Ajustement selon la qualité de la session
@@ -5570,7 +5280,6 @@ def send_pro_page(uid):
         "  • Tout STARTER +\n"
         "  • Rapports quotidiens + hebdo\n"
         "  • Suivi TP/SL automatique\n"
-        "  • Agent IA Binance (Challenge 5$→500$)\n"
         "  • <b>10$ USDT/mois</b>\n\n"
         "👑 <b>VIP</b>  —  Signaux illimités\n"
         "  • Tout PRO + Support @leaderOdg\n"
@@ -5665,28 +5374,24 @@ def kb_admin_full():
         [{"text":"📡 Forcer scan","callback_data":"adm_scan"},{"text":"🔍 Debug scan","callback_data":"adm_debug"}],
         [{"text":"✉️ Message → TOUS","callback_data":"adm_bcast_all"},{"text":"✉️ Message → PRO","callback_data":"adm_bcast_pro"}],
         [{"text":"📢 Messages Promo","callback_data":"adm_promo_list"},{"text":"🌍 État marchés","callback_data":"adm_marches"}],
-        [{"text":"🏆 Challenge IA","callback_data":"challenge"},{"text":"🔧 Recommandations","callback_data":"adm_reco"}],
         [{"text":"🧠 Mémoire IA","callback_data":"adm_memory"}],
     ]}
 
 def send_admin_full(uid):
     if uid!=ADMIN_ID: tg_send(uid,"❌ Accès refusé."); return
     total,pro,sigs,pays,g1d=global_stats(); sn,sm,sl_l,_=get_session(); sm=get_adaptive_score_min()
-    st=daily_stats(); pend=pending_pays(); ch=chal_get(); reg=AI_REG
+    st=daily_stats(); pend=pending_pays()
     tg_sticker(uid,STK_PRO)
     tg_send(uid,
-        "🛡 <b>PANEL ADMIN — AlphaBot v10</b>\n"+"═"*22+"\n\n"
+        "🛡 <b>PANEL ADMIN — AlphaBot PRO v21</b>\n"+"═"*22+"\n\n"
         "👥 Membres: <b>{}</b>  ·  PRO: <b>{}</b>  ·  FREE: <b>{}</b>\n"
         "📡 Signaux: <b>{}</b>  ·  Gains: <b>+${}</b>\n"
         "💰 Payés: <b>{}</b>  ·  En attente: <b>{}</b>{}\n\n"
-        "🤖 <b>IA:</b> {:.4f}$ AM:{}/4 W:{} L:{}\n"
-        "🌍 Régime: <b>{}</b>  Positions: {}/{}\n\n"
         "🕐 Session: {}  Score min: {}\n\n"
         "/activate /degrade /scan /debug /stats /membres /marches".format(
             total,pro,total-pro,st["n"],st["g1"],pays,len(pend),
             "  ⚠️ À valider!" if pend else "",
-            ch["balance"],ch["am_cycle"],ch.get("today_w",0),ch.get("today_l",0),
-            reg.get("regime","?"),sum(1 for t in AI_OT.values() if t["status"]=="open"),MAX_OPEN,sl_l,sm),
+            sl_l, sm),
         kb=kb_admin_full())
 
 def send_admin_stats_full(uid):
@@ -5775,7 +5480,6 @@ def handle_monstatus_full(uid):
     plan,exp,src=get_pro_info(uid); total,pro,sigs,pays,g1d=global_stats()
     sn,sm,sl_l,wknd=get_session(); st=daily_stats(); ws=weekly_stats()
     cnt=count_today(uid); pend=pending_pays(); refs=get_refs(uid)
-    ch=chal_get(); reg=AI_REG
     win_pct=int(st["wins"]/st["n"]*100) if st["n"] else 0
     pend_str="\n⏳ <b>{} paiement(s) en attente !</b>".format(len(pend)) if pend else ""
     tg_send(uid,
@@ -5801,7 +5505,7 @@ def handle_monstatus_full(uid):
             total,pro,total-pro,pays,len(pend),pend_str,sigs,
             st["n"],st["wins"],win_pct,st["g001"],st["g1"],
             ws["n"],ws["wins"],ws["g1"],
-            ch["balance"],ch["am_cycle"],reg.get("regime","?"),uid))
+            uid))
 
 def handle_marches_full(uid):
     sn,sm,sl_l,wknd=get_session(); sm=get_adaptive_score_min()
@@ -6705,6 +6409,14 @@ def handle_new_group_member(uid, uname, first_name):
 
 def process_update(upd):
     try:
+        # ── Ignorer les updates antérieurs au démarrage du bot ───────
+        upd_date = 0
+        if "message" in upd:
+            upd_date = upd["message"].get("date", 0)
+        elif "callback_query" in upd:
+            upd_date = upd["callback_query"].get("message", {}).get("date", 0)
+        if upd_date and upd_date < (_BOT_START_TIME - 10):
+            return  # update trop ancien → ignoré silencieusement
         # ── Nouveau membre dans le groupe ────────────────────────
         if "chat_member" in upd:
             cm = upd["chat_member"]
@@ -7029,9 +6741,6 @@ def startup():
     db_init()
     db_register(ADMIN_ID,"leaderOdg"); db_pro(ADMIN_ID,"ADMIN_AUTO",days=None)
     log("INFO",clr("Init données Binance...","c"))
-    threading.Thread(target=refresh_exch,daemon=True).start()
-    threading.Thread(target=refresh_ai,daemon=True).start()
-    sn,sm,sl_l,wknd=get_session(); ch=chal_get()
     # Message de démarrage en arrière-plan — ne bloque pas le serveur HTTP
     def _notify():
         try:
@@ -7047,8 +6756,6 @@ def startup():
                 "🛠 /admin pour le panel".format(
                     sl_l, sm,
                     "🌍 <b>Week-end : crypto uniquement !</b>" if wknd else "📈 Session : {}".format(sl_l),
-                    AI_REG.get("regime","Init"),
-                    ch["balance"], ch["start_bal"]*100,
                     FREE_LIMIT, PRO_LIMIT),
                 kb=kb_reply())   # ← envoie le clavier au démarrage
         except Exception as e:
@@ -7101,19 +6808,15 @@ def make_wh():
                 except: pass
         def do_GET(self):
             path = self.path.split("?")[0]
-            ch   = chal_get(); reg = AI_REG
             if path == "/health":
-                # Endpoint dédié au keepalive — réponse JSON légère
-                body = '{{"status":"ok","balance":{:.4f},"regime":"{}","cycles":{}}}'.format(
-                    ch["balance"], reg.get("regime","?"), _cycles_no_signal).encode()
+                body = '{"status":"ok","cycles":' + str(_cycles_no_signal) + '}'.encode()
                 self.send_response(200)
                 self.send_header("Content-Type","application/json")
                 self.end_headers(); self.wfile.write(body)
             else:
                 self.send_response(200); self.end_headers()
                 self.wfile.write(
-                    "AlphaBot v10 OK | {:.4f}$ | {} | cycles: {}".format(
-                        ch["balance"], reg.get("regime","?"), _cycles_no_signal).encode())
+                    "AlphaBot PRO v21 OK | cycles: {}".format(_cycles_no_signal).encode())
         def log_message(self, *a): pass
     return WH
 
@@ -7134,8 +6837,6 @@ def main():
         # ── ÉTAPE 3 : Telegram + IA en arrière-plan ──────────────
         def _init_bg():
             # Binance data
-            threading.Thread(target=refresh_exch, daemon=True).start()
-            threading.Thread(target=refresh_ai, daemon=True).start()
             # Configurer le webhook
             tg_req("deleteWebhook", {"drop_pending_updates": "true"})
             time.sleep(1)
@@ -7147,21 +6848,18 @@ def main():
             })
             if r.get("ok"): log("INFO", clr("Webhook OK — Bot prêt!", "b", "g"))
             else: log("ERR", clr("Webhook échoué: {}".format(r), "red"))
-            # Broadcast nouvelle version à tous les membres
-            threading.Thread(target=broadcast_new_version, daemon=True).start()
+            # Broadcast nouvelle version désactivé au redémarrage (évite le spam)
+            # threading.Thread(target=broadcast_new_version, daemon=True).start()
             # Message de démarrage admin
             sn, sm, sl_l, wknd = get_session()
             sm_real = get_adaptive_score_min()
-            ch = chal_get()
             tg_send(ADMIN_ID,
-                "🤖 <b>AlphaBot PRO v20 — EN LIGNE !</b>\n\n"
+                "🤖 <b>AlphaBot PRO v21 — EN LIGNE !</b>\n\n"
                 "✅ DB initialisée\n"
                 "✅ Port {} ouvert\n"
                 "✅ Webhook configuré\n"
                 "🧠 IA Validator : {}  [mode: {}]\n\n"
                 "🕐 Session : <b>{}</b>  Score min : <b>{}</b>\n"
-                "🌍 Régime IA : <b>{}</b>\n"
-                "🏆 Challenge : <b>{:.4f}$</b>\n\n"
                 "📡 FREE {}/j  ·  PRO {}/j\n"
                 "🛠 /admin pour le panel".format(
                     port,
@@ -7169,8 +6867,7 @@ def main():
                     + (" + Gemini" if GEMINI_API_KEY else ""),
                     AI_VALIDATOR,
                     sl_l, sm_real,
-                    AI_REG.get("regime", "Init"),
-                    ch["balance"], FREE_LIMIT, PRO_LIMIT),
+                    FREE_LIMIT, PRO_LIMIT),
                 kb=kb_reply())
         threading.Thread(target=_init_bg, daemon=True).start()
         state = {"ls": 0, "la": 0, "lc": 0}
@@ -7179,8 +6876,6 @@ def main():
                 try:
                     now=time.time()
                     if now-state["ls"]>=SCAN_SEC: state["ls"]=now; threading.Thread(target=scan_and_send,daemon=True).start()
-                    if now-state["la"]>=300: state["la"]=now; threading.Thread(target=refresh_ai,daemon=True).start()
-                    if now-state["lc"]>=15: state["lc"]=now; threading.Thread(target=ai_check,daemon=True).start()
                 except Exception as e: log("ERR","loop: {}".format(e))
                 time.sleep(10)
         threading.Thread(target=_loop,daemon=True).start()
@@ -7204,8 +6899,6 @@ def main():
         db_init()
         db_register(ADMIN_ID, "leaderOdg")
         db_pro(ADMIN_ID, "ADMIN_AUTO", days=None)
-        threading.Thread(target=refresh_exch, daemon=True).start()
-        threading.Thread(target=refresh_ai, daemon=True).start()
         tg_req("deleteWebhook",{"drop_pending_updates":"true"}); time.sleep(1)
         # Purge old updates
         offset=0
@@ -7214,8 +6907,8 @@ def main():
             if not batch: break
             offset=batch[-1]["update_id"]+1
         log("INFO", clr("Polling démarré (offset={})".format(offset), "g"))
-        # Broadcast nouvelle version
-        threading.Thread(target=broadcast_new_version, daemon=True).start()
+        # Broadcast désactivé au redémarrage
+        # threading.Thread(target=broadcast_new_version, daemon=True).start()
         ls=la=lc=0
         while True:
             try:
@@ -7228,11 +6921,10 @@ def main():
                     threading.Thread(target=process_update,args=(upd,),daemon=True).start()
                 now=time.time()
                 if now-ls>=SCAN_SEC: ls=now; threading.Thread(target=scan_and_send,daemon=True).start()
-                if now-la>=300: la=now; threading.Thread(target=refresh_ai,daemon=True).start()
-                if now-lc>=15: lc=now; threading.Thread(target=ai_check,daemon=True).start()
             except KeyboardInterrupt: tg_send(ADMIN_ID,"🛑 Bot arrêté."); break
             except Exception as e: log("ERR",str(e)); time.sleep(5)
 
 if __name__=="__main__":
     main()
+
 
