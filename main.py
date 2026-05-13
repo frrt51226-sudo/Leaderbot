@@ -3455,6 +3455,10 @@ def _scan_inner():
         # ── DM individuels : 1 message par utilisateur ───────────────
         for uid in all_users():
             try:
+                # PDG/Admin → toujours signal PRO complet, jamais limité
+                if uid == ADMIN_ID:
+                    tg_send(uid, msg_p)
+                    continue
                 pro = is_pro(uid)
                 c   = count_today(uid)
                 if pro:
@@ -4724,6 +4728,8 @@ def db_count_reset(uid):
 
 
 def db_count_today(uid):
+    # PDG / Admin → compteur toujours à 0 (jamais bloqué)
+    if uid == ADMIN_ID: return 0
     ds = datetime.now().strftime("%Y-%m-%d")
     con = _conn(); cur = con.cursor()
     try:
@@ -4856,6 +4862,8 @@ def db_global_stats():
 
 
 def db_is_pro(uid):
+    # PDG / Admin → toujours PRO, sans limite, sans expiration
+    if uid == ADMIN_ID: return True
     con = _conn(); cur = con.cursor()
     cur.execute("SELECT plan FROM users WHERE user_id=?", (uid,))
     row = cur.fetchone(); con.close()
