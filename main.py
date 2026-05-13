@@ -1,14 +1,15 @@
 
 #!/usr/bin/env python3
 """
-AlphaBot PRO v21.2.0 — Agent IA Adaptatif + Validateur Dual-AI
-════════════════════════════════════════════════════════════════
+AlphaBot PRO v20 — Agent IA Adaptatif + Validateur Dual-AI
+════════════════════════════════════════════════════════════
 • Bot Telegram FREE/PRO/VIP + paiement USDT auto
 • 20 marchés Forex/Métaux/Crypto/Indices/Pétrole
 • Cerveau ICT/SMC v2 + Analyse Multi-Timeframe
-• Tendance de fond : H4 (interne) | Entrée : M5 max M15
+• Tendance de fond : H1 (interne) | Entrée : M5 max M15
 • Si pas de setup parfait → l'agent allège les critères
   si tendance de fond + session + broker sont valides
+• Challenge IA 5$→500$ (Binance simulation)
 • ✨ NEW v19 : Validateur Dual-AI (Claude + Gemini)
     – Algo ICT/SMC  → Analyste technique (score /100)
     – Claude / Gemini / Les deux → Risk Manager (score /10 + proba %)
@@ -18,14 +19,9 @@ AlphaBot PRO v21.2.0 — Agent IA Adaptatif + Validateur Dual-AI
       · claude  = Claude uniquement
       · gemini  = Gemini uniquement
       · both    = les deux, moyenne des scores (vote majoritaire)
-• ✨ NEW v21.2.0 :
-    – pat_hh_failed()    : détection HH Failed / LL Failed (faiblesse de momentum)
-    – pat_fakeout_ict()  : Fakeout ICT sur Equal Highs/Lows (sweep institutionnel)
-    – TP2 dans tous les signaux agent_analyze (extension ×5 risque)
-    – pattern_score_m5 max +65 pts (vs +50 avant)
 • pip install requests anthropic google-generativeai
 """
-import json, ssl, time, threading, math, random, logging, traceback
+import json, ssl, time, threading, math, random, logging
 import urllib.request, urllib.parse, urllib.error, os
 from datetime import datetime, timedelta, timezone
 from queue import Queue, Empty
@@ -67,39 +63,52 @@ except ImportError as _amd_err:
     def fmt_signal_amd_vip(s, news, sl): return fmt_signal_pro(s, news, sl)
     AMD_PRIORITY_MARKETS = {}
 
+    _GEMINI_OK = True
+except ImportError:
+    _GEMINI_OK = False
+    print("[GeminiAI] ⚠️  pip install google-genai pour le fallback Gemini")
+
 # ══════════════════════════════════════════════════════
 #  CONFIG
 # ══════════════════════════════════════════════════════
-TG_TOKEN     = os.getenv("TG_TOKEN",  "6950706659:AAEELRFkJy1N2Rn61qQTnY1ZCbU8xaNMOIs")
+TG_TOKEN     = os.getenv("TG_TOKEN",  "6950706659:AAGXw-27ebhWLm2HfG7lzC7EckpwCPS_JFg")
 BOT_USER     = "leaderodg_bot"
-CHANNEL_ID   = os.getenv("TG_GROUP", "-1002335466840")
-VIP_CH       = os.getenv("TG_VIP",   "-5281258868")
+CHANNEL_ID   = os.getenv("TG_GROUP", "-1003757467015")
+VIP_CH       = os.getenv("TG_VIP",   "-1003771736496")
 ADMIN_ID     = int(os.getenv("ADMIN_ID", "6982051442"))
 USDT_ADDR    = "TJuPBihvzgb6ffGLw4WnqC33Av38kwU7XE"
 BROKER_LINK  = "https://one.exnessonelink.com/a/nb3fx0bpnm"
 DB_FILE      = "ab10.db"
+BINANCE_BASE = "https://fapi.binance.com/fapi/v1"
 
 # ── Liens d'invitation groupes (à mettre à jour si lien change) ─
-FREE_GROUP_LINK = os.getenv("FREE_GROUP_LINK", "https://t.me/+rSKqzhPLEARiMmQ0")
-VIP_GROUP_LINK  = os.getenv("VIP_GROUP_LINK",  "https://t.me/+PRr8bpHnr8s4ZGNk")
+FREE_GROUP_LINK = os.getenv("FREE_GROUP_LINK", "https://t.me/+alphabotfree")   # ← remplace par ton vrai lien groupe FREE
+VIP_GROUP_LINK  = os.getenv("VIP_GROUP_LINK",  "https://t.me/+alphabotvip")    # ← remplace par ton vrai lien groupe VIP
 
-PRO_PRICE  = 10;  VIP_PRICE  = 20;  REF_TARGET = 20;  REF_MONTHS = 3
-FREE_LIMIT = 1;   PRO_LIMIT  = 10;  NB_AGENTS  = 20
-TRIAL_DAYS = 3;   SCAN_SEC   = 60;  DATA_MAX_AGE = 30
+PRO_PRICE  = 10;  REF_TARGET = 20;  REF_MONTHS = 3   # 20 filleuls = 3 mois PRO
+FREE_LIMIT = 2;   PRO_LIMIT  = 5;   NB_AGENTS  = 20  # Qualité > Quantité
+TRIAL_DAYS = 3;   SCAN_SEC   = 300; DATA_MAX_AGE = 30 # Scan toutes les 5 min
 DAILY_HOUR = 22;  WEEKLY_DAY = 6;   WEEKLY_HOUR = 21
-SIGNAL_CUTOFF_HOUR = 22   # Aucun signal envoyé à partir de 22h00 UTC
+SIGNAL_CUTOFF_HOUR = 21   # Aucun signal envoyé après 21h00 UTC
+FEE_TAKER  = 0.0004
+CHALLENGE_START = float(os.getenv("CHALLENGE_START", "10000.0"))  # 10 000$ virtuel
+MAX_OPEN   = 2;  COOLDOWN_MIN = 45   # Max 2 trades ouverts, cooldown 45 min
+FLOOR_USD  = 500.0; DD_LIMIT = 0.10  # Challenge : floor 500$, drawdown max 10%
+AM_MULT    = 1.20; AM_MAX = 3
 
-# ── Throttle signaux ────────────────────────────────────────────
-MAX_SIG_PER_HOUR  = 1   # strict : 1 seul signal par heure glissante
-MAX_SIG_PER_DAY   = 10  # max global par jour (PRO: limité par PRO_LIMIT)
-MIN_GAP_BETWEEN   = 30  # minutes minimum entre 2 signaux consécutifs
+# ── Throttle signaux — Qualité maximale ─────────────────────────
+MAX_SIG_PER_HOUR  = 1    # 1 seul signal par heure (strict)
+MAX_SIG_PER_DAY   = 5    # Max 5 signaux/jour (PRO) — qualité > quantité
+MIN_GAP_BETWEEN   = 60   # 60 min minimum entre 2 signaux
+RR_MIN_GLOBAL     = 3.0  # RR minimum absolu = 3.0
 
-# Timestamp de démarrage — ignore les updates Telegram antérieurs
-_BOT_START_TIME   = time.time()
-
-# ── Anti-spam dispatch (cooldown par utilisateur par bouton) ─────
-_DISPATCH_CD: dict = {}
-_DISPATCH_CD_FALLBACK: dict = {}
+# ── Score adaptatif selon qualité du setup ───────────────────────
+# Le score minimum varie selon : session + phase AMD + confirmations SMC
+# Aucun seuil fixe — le setup lui-même définit son score minimum
+SCORE_BASE_MIN    = 75   # minimum absolu (peu importe le contexte)
+SCORE_ELITE_MIN   = 90   # setup élite (toutes confirmations)
+SCORE_AMD_DISTRIB = 82   # AMD Distribution validée
+SCORE_AMD_MANIP   = 78   # AMD Manipulation validée
 
 MARKETS = [
     {"sym":"GC=F",     "name":"XAUUSD","cat":"METALS","pip":0.01,  "max_sp":70,"vol":5,"crypto":False},
@@ -120,10 +129,9 @@ MARKETS = [
     {"sym":"ES=F",     "name":"SPX500","cat":"INDICES","pip":0.25, "max_sp":3, "vol":5,"crypto":False},
     {"sym":"YM=F",     "name":"US30",  "cat":"INDICES","pip":1.0,  "max_sp":5, "vol":5,"crypto":False},
     {"sym":"CL=F",     "name":"USOIL", "cat":"OIL",   "pip":0.01, "max_sp":8, "vol":4,"crypto":False},
-    {"sym":"ETH-USD",  "name":"ETHUSD","cat":"CRYPTO","pip":0.1,  "max_sp":50,"vol":4,"crypto":True},
-    {"sym":"EURGBP=X", "name":"EURGBP","cat":"FOREX", "pip":0.0001,"max_sp":2,"vol":3,"crypto":False},
 ]
 CAT_EMO = {"FOREX":"💱","METALS":"🥇","CRYPTO":"₿","INDICES":"📈","OIL":"🛢"}
+PAIR_MAX_LEV = {"BTCUSDT":125,"ETHUSDT":100,"SOLUSDT":50,"BNBUSDT":75,"XRPUSDT":50}
 # ══════════════════════════════════════════════════════════════════════
 #  MODULE CLAUDE AI — VALIDATEUR EXPERT ICT/SMC
 #  Architecture : Algo (analyste) → Claude (risk mgr) → Script (juge)
@@ -481,42 +489,25 @@ def fmt_ai_block(ai: dict) -> str:
 # ══════════════════════════════════════════════════════
 
 # Priorité par paire (bonus score)
-# ══════════════════════════════════════════════════════
-#  PRIORITÉ MARCHÉS — Gold + BTC = TIER 1 ABSOLU
-#  Tous les setups actifs sur Tier 1
-#  Autres marchés : Breaker Block + setups majeurs seulement
-# ══════════════════════════════════════════════════════
 MARKET_PRIORITY = {
-    # ── TIER 1 : Priorité absolue — TOUS les setups ──────────
-    "XAUUSD": 30,   # 🥇 GOLD — leader, liquidité maximale
-    "BTCUSD": 28,   # ₿  BTC  — crypto phare
-    # ── TIER 2 : Haute liquidité — setups majeurs ─────────────
-    "ETHUSD": 18,
-    "XAGUSD": 16,   # silver — corrélé Gold
-    "GBPJPY": 14,   # ultra volatile → setup premium
-    "NAS100": 13,
-    # ── TIER 3 : Marchés standard — Breaker + majeurs seulement
+    "XAUUSD": 20,   # 🥇 GOLD — PRIORITÉ ABSOLUE AMD
+    "BTCUSD": 18,   # ₿  BTC  — PRIORITÉ ABSOLUE AMD
+    "GBPJPY": 12,   # ultra volatile → setup premium
+    "NAS100": 11,   # nasdaq → sessions US
+    "XAGUSD": 10,   # silver → suit le gold
     "SPX500":  9,
     "US30":    9,
-    "EURUSD":  8,
-    "USDJPY":  8,
-    "GBPUSD":  7,
-    "EURJPY":  7,
-    "EURGBP":  5,
+    "EURUSD":  7,
+    "USDJPY":  7,
+    "GBPUSD":  6,
+    "EURJPY":  6,
 }
 
-# Tier 1 : TOUS les setups SMC/PA actifs + score bonus fort
-TIER1_MARKETS = {"XAUUSD", "BTCUSD"}
-# Tier 2 : setups majeurs actifs
-TIER2_MARKETS = {"ETHUSD", "XAGUSD", "GBPJPY", "NAS100"}
-# Tier 3 : Breaker Block + OB + FVG + CHoCH seulement (les plus fiables)
-TIER3_SETUPS_ALLOWED = {"Breaker Block", "OB", "FVG", "CHoCH", "BOS", "Sweep LL ✓", "Sweep HH ✓", "EQH prise ✓", "EQL prise ✓"}
-
 # ── Marchés AMD Premium (analyse H4 forcée) ─────────────────────────
-AMD_PREMIUM_MARKETS = {"XAUUSD", "BTCUSD", "XAGUSD", "ETHUSD"}
+AMD_PREMIUM_MARKETS = {"XAUUSD", "BTCUSD", "XAGUSD"}
 
 # Forex autorisés en semaine
-FOREX_ACTIFS = {"EURUSD", "GBPUSD", "USDJPY", "GBPJPY", "EURJPY", "EURGBP"}
+FOREX_ACTIFS = {"EURUSD", "GBPUSD", "USDJPY", "GBPJPY", "EURJPY"}
 
 def allowed_market(m):
     """
@@ -576,7 +567,7 @@ CTX = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 CTX.check_hostname = False; CTX.verify_mode = ssl.CERT_NONE
 CTX.set_ciphers("DEFAULT@SECLEVEL=0")
 TG = "https://api.telegram.org/bot{}/".format(TG_TOKEN)
-_tg_lock = threading.Semaphore(5)  # FIX v21.3: 5 envois simultanés (vs Lock bloquant tout)
+_tg_lock = threading.Lock()
 
 def http_get(url, timeout=15):
     hdrs = {"User-Agent":"Mozilla/5.0","Accept":"application/json"}
@@ -799,142 +790,14 @@ def generate_signal_chart(sig, candles=None):
     ax_i.text(0.50, y, "Not financial advice", transform=ax_i.transAxes,
               fontsize=6.5, color=GREY, va="top", ha="center", alpha=0.55)
 
-    # ── Watermark + branding ───────────────────────────────────
-    fig.text(0.5, 0.01, "@leaderodg_bot  |  AlphaBot PRO v21", ha="center",
-             fontsize=7.5, color=GREY, alpha=0.6)
-
-    # ── Bannière "SIGNAL PRO" en haut du chart ─────────────────
-    banner_color = GREEN if side == "BUY" else RED
-    fig.patches.append(plt.Rectangle((0, 0.955), 1, 0.045,
-        transform=fig.transFigure, color=banner_color, alpha=0.85, zorder=10))
-    fig.text(0.5, 0.967, "⚡  SIGNAL {}  —  {}  ⚡".format(side, name),
-             ha="center", va="center", fontsize=10, color="white",
-             fontweight="bold", zorder=11)
-
-    # ── Badge Score en coin ─────────────────────────────────────
-    score_color = "#ffd700" if score >= 90 else GREEN if score >= 75 else "#ff9800"
-    ax_i.add_patch(plt.FancyBboxPatch((0.60, 0.01), 0.38, 0.12,
-        boxstyle="round,pad=0.02", facecolor=score_color, alpha=0.18,
-        transform=ax_i.transAxes, zorder=12, edgecolor=score_color, linewidth=1.5))
-    ax_i.text(0.79, 0.07, "🏆 {}/100".format(score),
-        transform=ax_i.transAxes, fontsize=9, color=score_color,
-        ha="center", va="center", fontweight="bold", zorder=13)
+    fig.text(0.5, 0.01, "@leaderodg_bot", ha="center", fontsize=7.5, color=GREY, alpha=0.6)
 
     buf = BytesIO()
-    plt.savefig(buf, format="png", dpi=140, bbox_inches="tight",
+    plt.savefig(buf, format="png", dpi=130, bbox_inches="tight",
                 facecolor=BG, edgecolor="none")
     plt.close(fig)
     buf.seek(0)
     return buf.read()
-
-def generate_teasing_chart(sig, candles=None):
-    """
-    Génère une image de teasing pour le groupe GRATUIT.
-    Le chart est visible mais les niveaux (TP/SL/Entry) sont masqués
-    par un overlay "🔒 RÉSERVÉ PRO" pour inciter à l'upgrade.
-    """
-    if not _CHART_OK: return None
-    from io import BytesIO
-    import numpy as np
-
-    BG = "#0f1117"; BG2 = "#1a1d27"
-    GREEN = "#26a69a"; RED = "#ef5350"
-    YELLOW = "#ffd700"; WHITE = "#e0e0e0"; GREY = "#555566"
-    BLUR_COLOR = "#0f1117"
-
-    side  = sig["side"]
-    entry = float(sig["entry"])
-    tp    = float(sig["tp"])
-    sl    = float(sig["sl"])
-    name  = sig["name"]
-    emo   = CAT_EMO.get(sig["cat"], "📊")
-    color = GREEN if side == "BUY" else RED
-
-    fig = plt.figure(figsize=(8.5, 5), facecolor=BG)
-    ax_c = fig.add_axes([0.02, 0.10, 0.57, 0.82], facecolor=BG2)
-    ax_i = fig.add_axes([0.63, 0.04, 0.35, 0.92], facecolor=BG)
-
-    # ── Bougies réelles (visibles) ──────────────────────────────
-    if candles and len(candles) >= 8:
-        n = min(40, len(candles))
-        c = candles[-n:]
-        for i, cv in enumerate(c):
-            o, h, l, cl = cv["o"], cv["h"], cv["l"], cv["c"]
-            col = GREEN if cl >= o else RED
-            ax_c.plot([i, i], [l, h], color=col, linewidth=0.7, solid_capstyle="round")
-            ax_c.add_patch(plt.Rectangle((i-0.3, min(o,cl)), 0.6,
-                max(abs(cl-o), (h-l)*0.01), color=col, alpha=0.88))
-        x_end = n - 1
-    else:
-        np.random.seed(int(entry * 10) % 999)
-        pts = [entry * (1 + np.random.uniform(-0.002, 0.002)) for _ in range(35)]
-        pts[-1] = entry
-        ax_c.plot(pts, color=GREY, linewidth=1.1, alpha=0.7)
-        x_end = len(pts) - 1
-
-    # ── Lignes de niveaux floutées (traits mais sans valeurs) ───
-    ax_c.axhline(entry, color=YELLOW, linewidth=1.8, linestyle="--", alpha=0.3)
-    ax_c.axhline(tp,    color=GREEN,  linewidth=1.3, linestyle="-",  alpha=0.3)
-    ax_c.axhline(sl,    color=RED,    linewidth=1.3, linestyle="-",  alpha=0.3)
-
-    # ── Overlay "LOCKED" sur les valeurs ────────────────────────
-    for ypos in [entry, tp, sl]:
-        ax_c.add_patch(plt.Rectangle((x_end-2, ypos*(1-0.003)), 8, ypos*0.006,
-            color=BLUR_COLOR, alpha=0.95, zorder=10))
-    ax_c.text(x_end+0.5, entry, " 🔒", color=GREY, fontsize=8, va="center", zorder=11)
-    ax_c.text(x_end+0.5, tp,    " 🔒", color=GREY, fontsize=8, va="center", zorder=11)
-    ax_c.text(x_end+0.5, sl,    " 🔒", color=GREY, fontsize=8, va="center", zorder=11)
-
-    ax_c.set_facecolor(BG2); ax_c.tick_params(colors=GREY, labelsize=6)
-    for sp in ax_c.spines.values(): sp.set_color(GREY); sp.set_linewidth(0.4)
-    ax_c.set_xlim(-1, x_end + 6)
-    ax_c.set_title("M15  —  AlphaBot PRO v21", color=GREY, fontsize=7.5, pad=4)
-
-    # ── Panneau droit : teasing ──────────────────────────────────
-    ax_i.axis("off")
-    y = 0.97
-
-    ax_i.text(0.50, y, name + "  " + emo, transform=ax_i.transAxes,
-              fontsize=15, color=WHITE, va="top", ha="center", fontweight="bold"); y -= 0.11
-    dir_txt = "📈 BUY" if side == "BUY" else "📉 SELL"
-    ax_i.text(0.50, y, dir_txt, transform=ax_i.transAxes,
-              fontsize=13, color=color, va="top", ha="center", fontweight="bold"); y -= 0.13
-
-    # Cadenas sur chaque niveau
-    for label in ["🔒 Entrée", "🔒 TP", "🔒 SL", "🔒 RR"]:
-        ax_i.text(0.05, y, label, transform=ax_i.transAxes,
-                  fontsize=9.5, color=GREY, va="top")
-        ax_i.text(0.95, y, "— PRO —", transform=ax_i.transAxes,
-                  fontsize=9, color="#444455", va="top", ha="right", style="italic")
-        y -= 0.10
-
-    y -= 0.04
-    # CTA centré
-    ax_i.add_patch(plt.FancyBboxPatch((0.03, y-0.14), 0.94, 0.13,
-        boxstyle="round,pad=0.02", facecolor=color, alpha=0.20,
-        transform=ax_i.transAxes, zorder=5, edgecolor=color, linewidth=1.2))
-    ax_i.text(0.50, y-0.03, "👑 ACCÈS PRO", transform=ax_i.transAxes,
-              fontsize=10, color=color, ha="center", va="top", fontweight="bold", zorder=6)
-    ax_i.text(0.50, y-0.09, "/pay — 10$/mois", transform=ax_i.transAxes,
-              fontsize=8.5, color=WHITE, ha="center", va="top", zorder=6)
-
-    # ── Bannière top ────────────────────────────────────────────
-    fig.patches.append(plt.Rectangle((0, 0.955), 1, 0.045,
-        transform=fig.transFigure, color=color, alpha=0.85, zorder=10))
-    fig.text(0.5, 0.967, "⚡  SIGNAL DÉTECTÉ — {}  ⚡  [VERSION PRO]".format(name),
-             ha="center", va="center", fontsize=9.5, color="white",
-             fontweight="bold", zorder=11)
-
-    fig.text(0.5, 0.01, "@leaderodg_bot  |  Rejoins le PRO pour accéder aux niveaux",
-             ha="center", fontsize=7, color=GREY, alpha=0.6)
-
-    buf = BytesIO()
-    plt.savefig(buf, format="png", dpi=140, bbox_inches="tight",
-                facecolor=BG, edgecolor="none")
-    plt.close(fig)
-    buf.seek(0)
-    return buf.read()
-
 
 def tg_send_photo(cid, img_bytes, caption=""):
     """Envoie une image PNG via Telegram sendPhoto."""
@@ -996,6 +859,8 @@ from alphabot_pg import (
     # Paiements
     save_pay, pending_pays,
     db_save_payment, db_pending_payments,  # aliases
+    # Challenge
+    chal_get, chal_save,
     # Mémoire IA
     mem_query, mem_record, best_setups, worst_setups,
     # Aliases rétrocompatibilité v17
@@ -1010,130 +875,6 @@ from alphabot_pg import (
 )
 
 log("INFO", clr("DB v10 OK (backend: {})".format("PostgreSQL" if _USE_PG else "SQLite"), "b", "g"))
-
-# ══════════════════════════════════════════════════════════════════
-#  WRAPPERS DE COMPATIBILITÉ v21.3 — Normalise les retours de alphabot_pg
-#  Problèmes connus :
-#    1. daily_stats()   → clés "sig_count"/"total_g001"/"total_g1" au lieu de "n"/"g001"/"g1"
-#    2. get_pro_info()  → retourne 9 valeurs au lieu de 3
-#    3. get_refs()      → retourne une liste au lieu d'un int
-# ══════════════════════════════════════════════════════════════════
-_daily_stats_raw   = daily_stats
-_weekly_stats_raw  = weekly_stats
-_get_pro_info_raw  = get_pro_info
-_get_refs_raw      = get_refs
-
-def _safe_row(row, n):
-    """Pad ou tronque une row DB à exactement n champs."""
-    r = list(row)
-    while len(r) < n:
-        r.append("NORMAL" if len(r) in (8, 9) else 0)
-    return tuple(r[:n])
-
-def daily_stats(date_str=None):
-    """Wrapper normalisé — garantit toutes les clés attendues."""
-    try:
-        st = _daily_stats_raw() if date_str is None else _daily_stats_raw(date_str)
-    except TypeError:
-        st = _daily_stats_raw()
-    if st is None:
-        st = {}
-    # Clés numériques obligatoires
-    if "n" not in st:
-        st["n"] = st.get("sig_count", st.get("count", 0))
-    if "g001" not in st:
-        st["g001"] = st.get("total_g001", st.get("gain_001", 0))
-    if "g1" not in st:
-        st["g1"] = st.get("total_g1", st.get("gain_1", 0))
-    if "wins" not in st:
-        st["wins"] = 0
-    if "losses" not in st:
-        st["losses"] = max(0, st["n"] - st["wins"])
-    if "open" not in st:
-        st["open"] = 0
-    if "pot_g001" not in st:
-        st["pot_g001"] = st.get("potential_g001", st["g001"])
-    if "pot_g1" not in st:
-        st["pot_g1"] = st.get("potential_g1", st["g1"])
-    if "date" not in st:
-        from datetime import datetime
-        st["date"] = datetime.now().strftime("%Y-%m-%d")
-    if "rows" not in st:
-        st["rows"] = []
-    # Les rows restent en longueur originale — les fonctions utilisent _safe_row
-    return st
-
-def weekly_stats():
-    """Wrapper normalisé — mêmes clés que daily_stats."""
-    try:
-        st = _weekly_stats_raw()
-    except Exception:
-        st = {}
-    if st is None:
-        st = {}
-    if "n" not in st:
-        st["n"] = st.get("sig_count", st.get("count", 0))
-    if "g001" not in st:
-        st["g001"] = st.get("total_g001", st.get("gain_001", 0))
-    if "g1" not in st:
-        st["g1"] = st.get("total_g1", st.get("gain_1", 0))
-    if "wins" not in st:
-        st["wins"] = 0
-    if "losses" not in st:
-        st["losses"] = max(0, st["n"] - st["wins"])
-    if "rows" not in st:
-        st["rows"] = []
-    if "week_start" not in st:
-        from datetime import datetime, timedelta
-        st["week_start"] = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-    return st
-
-def get_pro_info(uid):
-    """Wrapper — retourne toujours exactement (plan, expires, source)."""
-    try:
-        result = _get_pro_info_raw(uid)
-        if result is None:
-            return ("FREE", None, None)
-        if isinstance(result, (list, tuple)):
-            r = list(result)
-            plan    = r[0] if len(r) > 0 else "FREE"
-            expires = r[1] if len(r) > 1 else None
-            source  = r[2] if len(r) > 2 else None
-            return (plan, expires, source)
-        return ("FREE", None, None)
-    except Exception as _e:
-        log("WARN", "get_pro_info wrapper: {}".format(_e))
-        return ("FREE", None, None)
-
-def get_refs(uid):
-    """Wrapper — retourne toujours un int (nombre de filleuls)."""
-    try:
-        result = _get_refs_raw(uid)
-        if isinstance(result, (list, tuple)):
-            return len(result)
-        if isinstance(result, int):
-            return result
-        return int(result) if result else 0
-    except Exception:
-        return 0
-
-_global_stats_raw = global_stats
-
-def global_stats():
-    """Wrapper — retourne toujours exactement (total, pro, sigs, pays, g1d)."""
-    try:
-        result = _global_stats_raw()
-        if result is None:
-            return (0, 0, 0, 0, 0.0)
-        r = list(result)
-        while len(r) < 5:
-            r.append(0)
-        return tuple(r[:5])
-    except Exception as _e:
-        log("WARN", "global_stats wrapper: {}".format(_e))
-        return (0, 0, 0, 0, 0.0)
-
-log("INFO", clr("Wrappers DB v21.3 OK", "b", "g"))
 
 def setup_key(sig):
     """
@@ -1174,18 +915,136 @@ def mem_adj_score(sig_key, sc):
 # ══════════════════════════════════════════════════════
 #  SESSIONS
 # ══════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════
+#  SESSIONS & KILL ZONES — Logique ICT complète v21
+#  Kill Zones = début de session (volatilité maximale, stops chassés)
+#  Sessions valides = fenêtres stables pour entrer après la KZ
+# ════════════════════════════════════════════════════════════════
+#
+#  UTC    Session           Statut
+#  ─────────────────────────────────────────────────
+#  00-02  Asian Open        KZ Asiatique (éviter)
+#  02-06  Asian Mid         OK — range tight
+#  06-07  Pre-London        Attente
+#  07-08  London Open KZ    ⛔ KILL ZONE — éviter absolument
+#  08-11  London Prime      ✅ MEILLEURE SESSION
+#  11-12  London Close KZ   ⚠️ Volatilité close
+#  12-13  Dead Zone         ⛔ Éviter (lunch NY)
+#  13-14  NY Open KZ        ⛔ KILL ZONE — éviter
+#  14-17  NY Prime          ✅ BONNE SESSION
+#  17-18  NY Late           OK mais décline
+#  18-20  NY Close Approach ⚠️ Attention clôture
+#  20-21  NY Close KZ       ⛔ KILL ZONE — rollover
+#  21-24  OFF / Rollover    ⛔ Éviter
+
 def get_session():
-    h=datetime.now(timezone.utc).hour; wd=datetime.now(timezone.utc).weekday()
-    if wd>=5: return "WEEKEND",72,"🌍 Week-end ₿",True
-    if 7<=h<10:  return "LONDON_KZ",61,"🇬🇧 London Kill Zone 🔥",False
-    if 12<=h<16: return "OVERLAP",63,"🇬🇧+🇺🇸 London+NY",False
-    if 16<=h<21: return "NY",65,"🇺🇸 New York",False
-    if 10<=h<12: return "LONDON",63,"🇬🇧 Londres",False
-    if 0<=h<7:   return "ASIAN",68,"🌏 Asiatique",False
-    return "OFF",73,"🌑 Hors session",False
+    h  = datetime.now(timezone.utc).hour
+    m  = datetime.now(timezone.utc).minute
+    wd = datetime.now(timezone.utc).weekday()  # 0=lun, 6=dim
+
+    # Week-end : BTC scalp uniquement
+    if wd >= 5:
+        return "WEEKEND", 72, "🌍 Week-end ₿", True
+
+    # ── KILL ZONES (score très bas = signal quasi-impossible) ──────
+    # London Open KZ : 07h00–08h30 UTC
+    if h == 7 or (h == 8 and m < 30):
+        return "LONDON_KZ", 50, "⛔ London Kill Zone 07:00-08:30", False
+
+    # NY Open KZ : 13h00–14h30 UTC
+    if h == 13 or (h == 14 and m < 30):
+        return "NY_KZ", 50, "⛔ NY Kill Zone 13:00-14:30", False
+
+    # NY Close KZ : 20h30–22h00 UTC (rollover spread)
+    if (h == 20 and m >= 30) or h == 21:
+        return "NY_CLOSE_KZ", 45, "⛔ NY Close Kill Zone", False
+
+    # Asian Open KZ : 00h00–01h30 UTC
+    if h == 0 or (h == 1 and m < 30):
+        return "ASIAN_KZ", 55, "⛔ Asian Kill Zone 00:00-01:30", False
+
+    # ── SESSIONS VALIDES ─────────────────────────────────────────────
+    # London Prime : 08h30–11h00 UTC — MEILLEURE SESSION
+    if (h == 8 and m >= 30) or (9 <= h <= 10) or (h == 11 and m < 0):
+        return "LONDON_PRIME", 68, "🇬🇧 London Prime ✅ 08:30-11:00", False
+
+    # London-NY Overlap : 14h30–17h00 UTC — TRÈS BONNE SESSION
+    if (h == 14 and m >= 30) or (15 <= h <= 16) or (h == 17 and m == 0):
+        return "OVERLAP", 65, "🇬🇧🇺🇸 London+NY Overlap ✅ 14:30-17:00", False
+
+    # NY Prime : 17h00–20h00 UTC
+    if 17 <= h < 20:
+        return "NY_PRIME", 62, "🇺🇸 NY Prime ✅ 17:00-20:00", False
+
+    # London Close : 11h00–12h00 UTC (attention — volatilité de clôture)
+    if h == 11:
+        return "LONDON_CLOSE", 58, "⚠️ London Close 11:00-12:00", False
+
+    # Dead Zone NY Lunch : 12h00–13h00 UTC
+    if h == 12:
+        return "DEAD_ZONE", 48, "💤 Dead Zone 12:00-13:00 (éviter)", False
+
+    # Asian Mid : 02h00–06h00 UTC (range tight — signaux rares)
+    if 2 <= h < 6:
+        return "ASIAN_MID", 60, "🌏 Asian Mid 02:00-06:00", False
+
+    # Pre-London : 06h00–07h00 UTC
+    if h == 6:
+        return "PRE_LONDON", 55, "⏳ Pré-London 06:00-07:00", False
+
+    # Hors session (22h-24h)
+    return "OFF", 40, "🌑 Hors session", False
+
+
+def is_kill_zone() -> bool:
+    """Retourne True si on est actuellement dans une Kill Zone ICT."""
+    sn, _, _, _ = get_session()
+    return sn in ("LONDON_KZ", "NY_KZ", "NY_CLOSE_KZ", "ASIAN_KZ", "DEAD_ZONE", "OFF")
+
+
+def get_session_quality() -> dict:
+    """
+    Retourne des infos détaillées sur la qualité de la session actuelle.
+    Utilisé pour le score adaptatif et le filtrage des signaux.
+    """
+    sn, sm, sl, wknd = get_session()
+
+    quality = {
+        "LONDON_PRIME": {"tier": 1, "name": "London Prime",    "bonus": 15, "allowed": True},
+        "OVERLAP":      {"tier": 1, "name": "London+NY",       "bonus": 12, "allowed": True},
+        "NY_PRIME":     {"tier": 2, "name": "NY Prime",        "bonus": 8,  "allowed": True},
+        "ASIAN_MID":    {"tier": 3, "name": "Asian Mid",       "bonus": 3,  "allowed": True},
+        "LONDON_CLOSE": {"tier": 3, "name": "London Close",    "bonus": 0,  "allowed": True},
+        "PRE_LONDON":   {"tier": 3, "name": "Pré-London",      "bonus": -2, "allowed": True},
+        "WEEKEND":      {"tier": 2, "name": "Week-end",        "bonus": 5,  "allowed": True},
+        # Kill Zones — signaux bloqués
+        "LONDON_KZ":    {"tier": 0, "name": "⛔ London KZ",   "bonus": -30, "allowed": False},
+        "NY_KZ":        {"tier": 0, "name": "⛔ NY KZ",       "bonus": -30, "allowed": False},
+        "NY_CLOSE_KZ":  {"tier": 0, "name": "⛔ NY Close KZ", "bonus": -40, "allowed": False},
+        "ASIAN_KZ":     {"tier": 0, "name": "⛔ Asian KZ",    "bonus": -25, "allowed": False},
+        "DEAD_ZONE":    {"tier": 0, "name": "💤 Dead Zone",   "bonus": -35, "allowed": False},
+        "OFF":          {"tier": 0, "name": "🌑 Off",          "bonus": -40, "allowed": False},
+    }.get(sn, {"tier": 0, "name": sn, "bonus": 0, "allowed": False})
+
+    return {
+        "session": sn,
+        "label":   sl,
+        "score_min": sm,
+        "weekend": wknd,
+        **quality,
+    }
+
 
 def sess_bonus(sn):
-    return {"LONDON_KZ":15,"OVERLAP":10,"NY":8,"LONDON":5,"ASIAN":0,"WEEKEND":5,"OFF":-20}.get(sn,0)
+    """Bonus/malus de score selon la session — utilisé dans agent_analyze."""
+    return {
+        "LONDON_PRIME": 15, "OVERLAP": 12, "NY_PRIME": 8,
+        "ASIAN_MID": 3,     "LONDON_CLOSE": 0, "PRE_LONDON": -2,
+        "WEEKEND": 5,
+        # Kill Zones — pénalité forte (signal quasi-impossible)
+        "LONDON_KZ": -30, "NY_KZ": -30, "NY_CLOSE_KZ": -40,
+        "ASIAN_KZ": -25,  "DEAD_ZONE": -35, "OFF": -40,
+    }.get(sn, 0)
 
 # ══════════════════════════════════════════════════════
 #  FETCH DONNÉES YAHOO
@@ -1217,7 +1076,7 @@ def fetch_c(sym, interval, period):
             if not res: continue
             ts   = res[0].get("timestamp", [])
             if ts and (time.time() - ts[-1]) / 60 > max_age:
-                log("DEBUG", "{} {} données périmées (marché fermé) — ignoré".format(sym, interval))
+                log("WARN", clr("{} {} trop vieux — ignoré".format(sym, interval), "y"))
                 return None
             q = res[0]["indicators"]["quote"][0]
             c = [{"o": float(o), "h": float(h), "l": float(l), "c": float(cv)}
@@ -1473,536 +1332,11 @@ def pat_fake_breakout(c, bias):
         body = abs(last["c"] - last["o"])
         return last["c"] < prev["h"] and upper_wick > body * 1.5 and last["c"] < last["o"]
 
-def pat_hh_failed(c, bias):
-    """
-    HH Failed (Higher High raté) → signal de faiblesse.
-    BEARISH : le prix tente un nouveau HH mais échoue à clôturer au-dessus.
-    BULLISH : prix tente un nouveau LL mais échoue (LL Failed → force haussière).
-    """
-    if len(c) < 15: return False
-    H, L = swings(c[-15:], n=2)
-    if bias == "BEARISH":
-        if len(H) < 2: return False
-        h1, h2 = H[-2][1], H[-1][1]
-        # h2 dépasse h1 en wick mais clôture en dessous → échec
-        last = c[-1]
-        return (last["h"] > h1 and last["c"] < h1 and
-                abs(last["h"] - h1) / h1 < 0.005)
-    else:  # BULLISH : LL Failed
-        if len(L) < 2: return False
-        l1, l2 = L[-2][1], L[-1][1]
-        last = c[-1]
-        return (last["l"] < l1 and last["c"] > l1 and
-                abs(last["l"] - l1) / l1 < 0.005)
-
-def pat_fakeout_ict(c, bias):
-    """
-    Fakeout ICT : cassure d'un niveau clé suivie d'un retournement violent.
-    Différent du fake_breakout : spécifique aux niveaux de liquidité externe
-    (equal highs/lows, swing majeurs) avec rejet en bougie englobante.
-    """
-    if len(c) < 10: return False
-    eq_h, eq_l = eqh_eql(c)
-    last = c[-1]; prev = c[-2]
-    body_last = abs(last["c"] - last["o"])
-    body_prev = abs(prev["c"] - prev["o"])
-    if body_prev == 0: return False
-
-    if bias == "BULLISH" and eq_l:
-        # Prix casse EQL vers le bas puis remonte en englobant
-        return (prev["l"] < eq_l and last["c"] > eq_l and
-                last["c"] > last["o"] and body_last >= body_prev * 1.2)
-    if bias == "BEARISH" and eq_h:
-        # Prix casse EQH vers le haut puis redescend en englobant
-        return (prev["h"] > eq_h and last["c"] < eq_h and
-                last["c"] < last["o"] and body_last >= body_prev * 1.2)
-    return False
-
-def pat_daily_high_low(c, bias, d1=None):
-    """
-    Daily High / Daily Low ICT.
-    Détecte si le prix est en train de manipuler (sweep) le DH ou DL
-    de la bougie Daily précédente avant retournement.
-
-    BUY  : sweep du Daily Low (PDL) + rejet haussier → entrée long
-    SELL : sweep du Daily High (PDH) + rejet baissier → entrée short
-
-    Utilise les données D1 si fournies, sinon estime depuis c (M15/M30).
-    """
-    if not c or len(c) < 20: return False, None, None
-
-    # Calcul PDH/PDL depuis D1 ou depuis les 96 bougies M15 (~1 jour)
-    if d1 and len(d1) >= 2:
-        pdh = d1[-2]["h"]
-        pdl = d1[-2]["l"]
-    else:
-        # Fallback : estimer depuis les 96 dernières bougies M15
-        window = c[-96:] if len(c) >= 96 else c
-        pdh = max(x["h"] for x in window)
-        pdl = min(x["l"] for x in window)
-
-    lp   = c[-1]["c"]
-    last = c[-1]
-    prev = c[-2]
-    tol  = (pdh - pdl) * 0.002  # tolérance 0.2% du range daily
-
-    if bias == "BULLISH":
-        # Sweep PDL : wick sous PDL puis clôture au-dessus
-        swept = prev["l"] <= pdl + tol or last["l"] <= pdl + tol
-        reject = last["c"] > pdl and last["c"] > last["o"]
-        body = abs(last["c"] - last["o"])
-        wick_low = last["o"] - last["l"] if last["c"] > last["o"] else last["c"] - last["l"]
-        if swept and reject and wick_low > body * 0.3:
-            return True, pdh, pdl
-
-    if bias == "BEARISH":
-        # Sweep PDH : wick au-dessus de PDH puis clôture en dessous
-        swept = prev["h"] >= pdh - tol or last["h"] >= pdh - tol
-        reject = last["c"] < pdh and last["c"] < last["o"]
-        body = abs(last["c"] - last["o"])
-        wick_high = last["h"] - last["o"] if last["c"] < last["o"] else last["h"] - last["c"]
-        if swept and reject and wick_high > body * 0.3:
-            return True, pdh, pdl
-
-    return False, pdh, pdl
-
-
-def pat_crt(c, bias):
-    """
-    CRT — Candle Range Theory (ICT).
-    Logique : la bougie N-1 est la "CRT candle" (range de référence).
-    La bougie N manipule un côté du range (High ou Low) avec un sweep,
-    puis se redistribue dans le sens opposé.
-
-    BUY  (BULLISH) :
-      - Bougie N-1 = range défini (High/Low)
-      - Bougie N   = sweep du Low de N-1 (manipulation)
-      - Clôture N  > milieu du range N-1 (redistribution haussière)
-
-    SELL (BEARISH) :
-      - Bougie N-1 = range défini
-      - Bougie N   = sweep du High de N-1 (manipulation)
-      - Clôture N  < milieu du range N-1 (redistribution baissière)
-    """
-    if not c or len(c) < 5: return False
-
-    ref  = c[-2]       # CRT candle (bougie de référence)
-    curr = c[-1]       # bougie courante (manipulation + redistribution)
-
-    ref_high = ref["h"]
-    ref_low  = ref["l"]
-    ref_mid  = (ref_high + ref_low) / 2
-    ref_range = ref_high - ref_low
-
-    if ref_range <= 0: return False
-
-    # La bougie de référence doit avoir un range significatif
-    # (au moins la moitié de l'ATR moyen des 10 dernières bougies)
-    avg_range = sum(abs(x["h"] - x["l"]) for x in c[-10:]) / 10
-    if ref_range < avg_range * 0.4: return False
-
-    if bias == "BULLISH":
-        # Sweep du Low de la CRT candle puis redistribution haussière
-        swept_low  = curr["l"] < ref_low                  # manipulation du Low
-        redis_bull = curr["c"] > ref_mid                  # clôture au-dessus du milieu
-        engulf     = curr["c"] > ref["o"]                 # force de la bougie
-        return swept_low and redis_bull and engulf
-
-    if bias == "BEARISH":
-        # Sweep du High de la CRT candle puis redistribution baissière
-        swept_high = curr["h"] > ref_high                 # manipulation du High
-        redis_bear = curr["c"] < ref_mid                  # clôture sous le milieu
-        engulf     = curr["c"] < ref["o"]                 # force de la bougie
-        return swept_high and redis_bear and engulf
-
-    return False
-
-
-def pat_hh_ll_confirmed(c, bias):
-    """
-    HH / LL Confirmé (continuation de structure ICT/SMC).
-    Différent de pat_hh_failed : ici le HH/LL EST confirmé par clôture.
-
-    BULLISH : nouveau Higher High confirmé par clôture → continuation
-    BEARISH : nouveau Lower Low confirmé par clôture → continuation
-
-    Condition supplémentaire : la correction intermédiaire (pullback)
-    ne doit pas dépasser 61.8% du dernier swing (structure intacte).
-    """
-    if len(c) < 20: return False
-    H, L = swings(c[-20:], n=3)
-
-    if bias == "BULLISH":
-        if len(H) < 2 or len(L) < 2: return False
-        h1, h2 = H[-2][1], H[-1][1]
-        l1, l2 = L[-2][1], L[-1][1]
-        last = c[-1]
-        # HH confirmé : nouveau high > ancien high, clôture au-dessus
-        hh_ok = last["c"] > h1 and last["h"] > h1
-        # HL intact : le dernier low est plus haut que l'avant-dernier
-        hl_ok = l2 > l1
-        # Pullback < 61.8% du dernier swing haussier
-        swing_size = h2 - l2 if h2 > l2 else 0
-        pullback   = (h2 - l2) / swing_size if swing_size > 0 else 1
-        return hh_ok and hl_ok and pullback < 0.618
-
-    if bias == "BEARISH":
-        if len(H) < 2 or len(L) < 2: return False
-        h1, h2 = H[-2][1], H[-1][1]
-        l1, l2 = L[-2][1], L[-1][1]
-        last = c[-1]
-        # LL confirmé : nouveau low < ancien low, clôture en dessous
-        ll_ok = last["c"] < l1 and last["l"] < l1
-        # LH intact : le dernier high est plus bas que l'avant-dernier
-        lh_ok = h2 < h1
-        # Pullback < 61.8% du dernier swing baissier
-        swing_size = h2 - l2 if h2 > l2 else 0
-        pullback   = (h2 - l2) / swing_size if swing_size > 0 else 1
-        return ll_ok and lh_ok and pullback < 0.618
-
-    return False
-
-
-def pat_silver_bullet(c, bias):
-    """
-    Silver Bullet ICT — fenêtres de temps institutionnelles.
-    Fenêtres valides (UTC) :
-      - 03h00–04h00  (Asia Kill Zone)
-      - 10h00–11h00  (London AM Silver Bullet)
-      - 14h00–15h00  (NY AM Silver Bullet)
-      - 20h00–21h00  (NY PM Silver Bullet)
-
-    Conditions :
-      - Prix dans la fenêtre temporelle Silver Bullet
-      - FVG créé dans la fenêtre + retest du FVG
-      - Aligné avec le biais H4
-    """
-    if not c or len(c) < 5: return False
-    h = datetime.now(timezone.utc).hour
-    m_ = datetime.now(timezone.utc).minute
-    # Vérifier si on est dans une fenêtre Silver Bullet
-    in_window = (
-        (h == 3)  or                          # Asia KZ
-        (h == 10) or                          # London AM
-        (h == 14) or                          # NY AM
-        (h == 20)                             # NY PM
-    )
-    if not in_window: return False
-
-    # FVG dans les 5 dernières bougies
-    last3 = c[-3:]
-    if len(last3) < 3: return False
-    a, b_, c_ = last3[0], last3[1], last3[2]
-
-    if bias == "BULLISH":
-        # FVG haussier : gap entre high[0] et low[2]
-        fvg_ok = a["h"] < c_["l"]
-        # Retest : prix revient dans le FVG
-        lp = c[-1]["c"]
-        retest = a["h"] <= lp <= c_["l"] if fvg_ok else False
-        return fvg_ok or (retest and c_["c"] > c_["o"])
-
-    if bias == "BEARISH":
-        # FVG baissier : gap entre low[0] et high[2]
-        fvg_ok = a["l"] > c_["h"]
-        lp = c[-1]["c"]
-        retest = c_["h"] <= lp <= a["l"] if fvg_ok else False
-        return fvg_ok or (retest and c_["c"] < c_["o"])
-
-    return False
-
-
-def pat_nwog_ndog(c, bias):
-    """
-    NWOG / NDOG — New Week/Day Opening Gap (ICT).
-    Le gap entre la clôture précédente et l'ouverture de la nouvelle
-    session constitue un niveau clé institutionnel.
-
-    NDOG : gap entre clôture 17h00 NY et ouverture 18h00 NY (quotidien)
-    NWOG : gap entre clôture vendredi 17h00 et ouverture dimanche 18h00
-
-    Logique : le prix revient combler le gap (magnétisme institutionnel)
-    puis continue dans le sens du biais H4.
-    """
-    if not c or len(c) < 10: return False
-
-    # Détecter un gap entre bougie N-5 et bougie N-4 (ouverture de session)
-    # Proxy : chercher un gap d'ouverture dans les 10 dernières bougies
-    for i in range(len(c) - 8, len(c) - 1):
-        if i < 1: continue
-        prev_close = c[i-1]["c"]
-        curr_open  = c[i]["o"]
-        gap_size   = abs(curr_open - prev_close)
-        avg_range  = sum(abs(x["h"] - x["l"]) for x in c[i-4:i]) / 4 if i >= 4 else 0
-        if avg_range == 0: continue
-
-        # Gap significatif (> 30% ATR moyen)
-        if gap_size < avg_range * 0.3: continue
-
-        lp = c[-1]["c"]
-        # Gap haussier (NDOG UP) → support, prix revient le tester
-        if curr_open > prev_close and bias == "BULLISH":
-            gap_mid = (curr_open + prev_close) / 2
-            if prev_close <= lp <= curr_open:
-                return True  # prix dans le gap → niveau clé
-        # Gap baissier (NDOG DOWN) → résistance
-        if curr_open < prev_close and bias == "BEARISH":
-            gap_mid = (curr_open + prev_close) / 2
-            if curr_open <= lp <= prev_close:
-                return True
-
-    return False
-
-
-def pat_midnight_open(c, bias):
-    """
-    Midnight Open ICT — niveau clé 00h00 UTC.
-    Le prix d'ouverture à minuit UTC est un niveau institutionnel majeur.
-    Le marché a tendance à revenir tester ce niveau avant de continuer.
-
-    Logique :
-      - Identifier le prix à 00h00 UTC (bougie la plus proche)
-      - Si le prix est au-dessus du Midnight Open → biais BULLISH confirmé
-      - Si le prix est en dessous → biais BEARISH confirmé
-      - Retest du niveau → entrée de haute probabilité
-    """
-    if not c or len(c) < 20: return False
-
-    # Estimer le Midnight Open : ouverture de la bougie ~96 bougies M15 ago
-    # (96 × 15min = 24h, donc la bougie d'il y a ~24h ≈ ouverture du jour)
-    idx_mo = max(0, len(c) - 96)
-    midnight_open = c[idx_mo]["o"]
-
-    lp   = c[-1]["c"]
-    atr_ = atr(c[-20:]) if len(c) >= 21 else abs(c[-1]["h"] - c[-1]["l"])
-    tol  = atr_ * 0.5  # tolérance 50% ATR pour le retest
-
-    if bias == "BULLISH":
-        # Prix au-dessus du MO + retest du niveau
-        above_mo = lp > midnight_open
-        retest   = abs(lp - midnight_open) < tol
-        # Bougie de rejet haussier sur le niveau
-        reject   = c[-1]["c"] > c[-1]["o"] and c[-1]["l"] < midnight_open + tol
-        return above_mo and (retest or reject)
-
-    if bias == "BEARISH":
-        # Prix en dessous du MO + retest du niveau
-        below_mo = lp < midnight_open
-        retest   = abs(lp - midnight_open) < tol
-        # Bougie de rejet baissier sur le niveau
-        reject   = c[-1]["c"] < c[-1]["o"] and c[-1]["h"] > midnight_open - tol
-        return below_mo and (retest or reject)
-
-    return False
-
-
-# ══════════════════════════════════════════════════════════════════
-#  NOUVEAUX PATTERNS FOREX RÉCURRENTS v21.7
-#  London Breakout Retest | NY Reversal | Turtle Soup | OB+FVG Continuation
-# ══════════════════════════════════════════════════════════════════
-
-def pat_london_breakout_retest(c, bias):
-    """
-    London Breakout Retest — Setup Forex le plus récurrent.
-    Logique : Range Asiatique (0-7h UTC) → cassure London → retest → continuation.
-
-    BUY  : London casse le haut du range asiatique → retest du niveau → long
-    SELL : London casse le bas du range asiatique  → retest du niveau → short
-
-    Paires idéales : EURUSD, GBPUSD, GBPJPY, EURJPY
-    """
-    if not c or len(c) < 40: return False
-
-    # Uniquement en session London ou Overlap (7h-16h UTC)
-    h = datetime.now(timezone.utc).hour
-    if not (7 <= h < 16): return False
-
-    # Range asiatique : ~28 bougies M15 avant London, on exclut les 8 bougies récentes
-    lookback = min(36, len(c) - 2)
-    asian_c  = c[-(lookback):-8] if len(c) > 16 else c[:-2]
-    if len(asian_c) < 4: return False
-
-    asian_high  = max(x["h"] for x in asian_c)
-    asian_low   = min(x["l"] for x in asian_c)
-    asian_range = asian_high - asian_low
-    if asian_range <= 0: return False
-
-    last = c[-1]; prev = c[-2]; prev2 = c[-3]
-
-    if bias == "BULLISH":
-        # Cassure du Asian High par London (impulsion)
-        breakout = prev2["c"] > asian_high or prev["c"] > asian_high
-        # Retest : prix revient tester Asian High comme support
-        retest   = last["l"] <= asian_high * 1.001 and last["c"] > asian_high * 0.999
-        # Bougie de rejet haussier sur le niveau
-        reject   = last["c"] > last["o"] and last["l"] < asian_high * 1.002
-        return breakout and (retest or reject)
-
-    if bias == "BEARISH":
-        # Cassure du Asian Low par London
-        breakout = prev2["c"] < asian_low or prev["c"] < asian_low
-        # Retest : prix revient tester Asian Low comme résistance
-        retest   = last["h"] >= asian_low * 0.999 and last["c"] < asian_low * 1.001
-        reject   = last["c"] < last["o"] and last["h"] > asian_low * 0.998
-        return breakout and (retest or reject)
-
-    return False
-
-
-def pat_ny_reversal(c, bias):
-    """
-    NY Reversal ICT — Retournement New York après sweep London.
-    Logique : London prend la liquidité (sweep swing) → NY inverse avec CHoCH M5.
-
-    BUY  : London sweepé swing low → NY CHoCH haussier + displacement → long
-    SELL : London sweepé swing high → NY CHoCH baissier + displacement → short
-
-    Actif uniquement en session NY (12h-17h UTC).
-    Excellent sur : EURUSD, GBPUSD, XAUUSD
-    """
-    if not c or len(c) < 24: return False
-
-    # Uniquement en session NY
-    h = datetime.now(timezone.utc).hour
-    if not (12 <= h < 17): return False
-
-    # Zone London : ~24 bougies M15 avant NY (bougies -24 à -4)
-    london_c    = c[-24:-4] if len(c) >= 28 else c[:-4]
-    if len(london_c) < 4: return False
-
-    london_high = max(x["h"] for x in london_c)
-    london_low  = min(x["l"] for x in london_c)
-
-    last = c[-1]; prev = c[-2]; prev2 = c[-3]; prev3 = c[-4]
-
-    # Corps moyen pour détecter le displacement
-    avg_body = sum(abs(x["c"] - x["o"]) for x in c[-10:-1]) / 9 if len(c) >= 10 else 0
-
-    if bias == "BULLISH":
-        # London a sweepé un swing low
-        swept_low    = prev3["l"] < london_low or prev2["l"] < london_low
-        # CHoCH haussier NY : clôture au-dessus d'un high London récent
-        recent_high  = max(prev3["h"], prev2["h"], prev["h"])
-        choch        = last["c"] > recent_high and last["c"] > last["o"]
-        # Displacement : corps large (>130% corps moyen)
-        body_last    = abs(last["c"] - last["o"])
-        displacement = body_last > avg_body * 1.3 if avg_body > 0 else True
-        return swept_low and choch and displacement
-
-    if bias == "BEARISH":
-        # London a sweepé un swing high
-        swept_high   = prev3["h"] > london_high or prev2["h"] > london_high
-        recent_low   = min(prev3["l"], prev2["l"], prev["l"])
-        choch        = last["c"] < recent_low and last["c"] < last["o"]
-        body_last    = abs(last["c"] - last["o"])
-        displacement = body_last > avg_body * 1.3 if avg_body > 0 else True
-        return swept_high and choch and displacement
-
-    return False
-
-
-def pat_turtle_soup(c, bias):
-    """
-    Turtle Soup ICT — Faux breakout institutionnel sur swing M15 majeur.
-    Logique : cassure du swing récent → rejet violent → retour dans le range.
-
-    BUY  : cassure swing low M15 → rejet → clôture au-dessus du swing → long
-    SELL : cassure swing high M15 → rejet → clôture en dessous → short
-
-    Très bon sur : EURUSD, GBPJPY, XAUUSD
-    Différence avec fakeout_ict : spécifique aux swings majeurs, pas aux EQH/EQL.
-    """
-    if not c or len(c) < 15: return False
-
-    H, L    = swings(c[-15:], n=2)
-    last    = c[-1]; prev = c[-2]
-    b_last  = abs(last["c"] - last["o"])
-    b_prev  = abs(prev["c"] - prev["o"])
-    if b_prev == 0: return False
-
-    if bias == "BULLISH" and len(L) >= 2:
-        swing_low  = min(L[-1][1], L[-2][1])
-        # prev a cassé sous le swing low (manipulation / stop hunt)
-        broke_low  = prev["l"] < swing_low
-        # last clôture au-dessus du swing low (Turtle Soup confirmé)
-        rejected   = last["c"] > swing_low and last["c"] > last["o"]
-        # Corps de retour englobant
-        engulf     = b_last >= b_prev * 1.1
-        return broke_low and rejected and engulf
-
-    if bias == "BEARISH" and len(H) >= 2:
-        swing_high  = max(H[-1][1], H[-2][1])
-        broke_high  = prev["h"] > swing_high
-        rejected    = last["c"] < swing_high and last["c"] < last["o"]
-        engulf      = b_last >= b_prev * 1.1
-        return broke_high and rejected and engulf
-
-    return False
-
-
-def pat_ob_fvg_continuation(c, bias):
-    """
-    OB + FVG Trend Continuation — Setup de continuation institutionnel.
-    Logique : BOS confirmé → pullback vers zone OB/FVG → continuation tendance.
-
-    BUY  : BOS haussier → pullback → FVG/OB zone → rebond → continuation long
-    SELL : BOS baissier → pullback → FVG/OB zone → rebond → continuation short
-
-    C'est le setup le plus fréquent en Forex tendanciel (EURUSD, USDJPY, GBPUSD).
-    Important pour équilibrer les setups reversal avec des setups de continuation.
-    """
-    if not c or len(c) < 20: return False
-
-    H, L  = swings(c[-20:], n=3)
-    last  = c[-1]; prev = c[-2]
-
-    if bias == "BULLISH":
-        if len(H) < 2: return False
-        # BOS : swing high précédent cassé
-        bos_level = H[-2][1]
-        bos_ok    = any(x["c"] > bos_level for x in c[-10:])
-        if not bos_ok: return False
-
-        # Pullback : prix revient dans la zone du BOS (±0.5%)
-        in_pullback = bos_level * 0.995 <= last["c"] <= bos_level * 1.002
-
-        # FVG haussier dans les 8 dernières bougies
-        fvg_ok = any(
-            c[i]["h"] < c[i+2]["l"]
-            for i in range(max(0, len(c)-8), len(c)-2)
-        )
-
-        # Confirmation : bougie haussière qui clôture au-dessus du prev high
-        confirm = last["c"] > last["o"] and last["c"] > prev["h"]
-
-        return bos_ok and (in_pullback or fvg_ok) and confirm
-
-    if bias == "BEARISH":
-        if len(L) < 2: return False
-        bos_level = L[-2][1]
-        bos_ok    = any(x["c"] < bos_level for x in c[-10:])
-        if not bos_ok: return False
-
-        in_pullback = bos_level * 0.998 <= last["c"] <= bos_level * 1.005
-
-        # FVG baissier
-        fvg_ok = any(
-            c[i]["l"] > c[i+2]["h"]
-            for i in range(max(0, len(c)-8), len(c)-2)
-        )
-
-        confirm = last["c"] < last["o"] and last["c"] < prev["l"]
-
-        return bos_ok and (in_pullback or fvg_ok) and confirm
-
-    return False
-
-
 def pattern_score_m5(c, bias):
     """
     Calcule le bonus de score total des patterns M5.
     Retourne (score_bonus, liste_badges).
-    Max +80 pts (étendu v21.6). Tous optionnels.
+    Max +50 pts. Tous optionnels.
     """
     if not c or len(c) < 20: return 0, []
     score = 0; badges = []
@@ -2018,47 +1352,7 @@ def pattern_score_m5(c, bias):
     if pat_fake_breakout(c, bias):
         score += 15
         badges.append("Fake BO ✓")
-    if pat_hh_failed(c, bias):
-        score += 12
-        badges.append("HH Failed ✓" if bias=="BEARISH" else "LL Failed ✓")
-    if pat_fakeout_ict(c, bias):
-        score += 14
-        badges.append("Fakeout ICT ✓")
-    # ── NOUVEAUX PATTERNS v21.6 ───────────────────────────────
-    dhl_ok, _pdh, _pdl = pat_daily_high_low(c, bias)
-    if dhl_ok:
-        score += 16
-        badges.append("PDL Sweep ✓" if bias=="BULLISH" else "PDH Sweep ✓")
-    if pat_crt(c, bias):
-        score += 17
-        badges.append("CRT Bull ✓" if bias=="BULLISH" else "CRT Bear ✓")
-    if pat_hh_ll_confirmed(c, bias):
-        score += 13
-        badges.append("HH Confirm ✓" if bias=="BULLISH" else "LL Confirm ✓")
-    # ── NOUVEAUX PATTERNS ICT v21.6.1 ─────────────────────────────
-    if pat_silver_bullet(c, bias):
-        score += 20
-        badges.append("Silver Bullet ✓")
-    if pat_nwog_ndog(c, bias):
-        score += 16
-        badges.append("NDOG Gap ✓")
-    if pat_midnight_open(c, bias):
-        score += 15
-        badges.append("Midnight Open ✓")
-    # ── PATTERNS FOREX RÉCURRENTS v21.7 ───────────────────────────
-    if pat_london_breakout_retest(c, bias):
-        score += 18
-        badges.append("London BRK ✓")
-    if pat_ny_reversal(c, bias):
-        score += 16
-        badges.append("NY Reversal ✓")
-    if pat_turtle_soup(c, bias):
-        score += 17
-        badges.append("Turtle Soup ✓")
-    if pat_ob_fvg_continuation(c, bias):
-        score += 15
-        badges.append("OB+FVG Cont ✓")
-    return min(score, 95), badges
+    return min(score, 50), badges
 
 # ══════════════════════════════════════════════════════
 #  AGENT ANALYZE PRINCIPAL
@@ -2293,523 +1587,22 @@ def agent_liquidity(candles, bias, lookback=40):
 
     return None  # Pas de prise de liquidité détectée → signal refusé
 
-
-
-# ══════════════════════════════════════════════════════
-#  📐 SETUPS AVANCÉS SMC + PRICE ACTION (v21.5)
-#  Basés sur les patterns institutionnels ICT/SMC
-# ══════════════════════════════════════════════════════
-
-def pat_breaker_block(c, bias):
-    """
-    Breaker Block : ancien OB cassé → devient support/résistance.
-    Séquence : BOS → retour sur l'ancien OB (maintenant Breaker) → rejet.
-    Images 1, 2, 4, 7.
-    """
-    if len(c) < 25: return False, None
-    # Trouver le BOS (cassure de structure)
-    highs = [x["h"] for x in c[:-5]]
-    lows  = [x["l"] for x in c[:-5]]
-    lp = c[-1]["c"]
-    if not highs or not lows: return False, None
-
-    if bias == "BULLISH":
-        # BOS haussier : prix a cassé un HH précédent
-        prev_hh = max(highs[-20:])
-        bos_ok = any(x["c"] > prev_hh for x in c[-10:])
-        if not bos_ok: return False, None
-        # Breaker = zone de l'ancien swing bas avant le BOS
-        bb_zone = min(lows[-15:])
-        in_bb = bb_zone * 0.998 <= lp <= bb_zone * 1.005
-        return in_bb, bb_zone
-    else:
-        prev_ll = min(lows[-20:])
-        bos_ok = any(x["c"] < prev_ll for x in c[-10:])
-        if not bos_ok: return False, None
-        bb_zone = max(highs[-15:])
-        in_bb = bb_zone * 0.995 <= lp <= bb_zone * 1.002
-        return in_bb, bb_zone
-
-def pat_demand_supply_zone(c, bias):
-    """
-    Demand Zone (haussier) / Supply Zone (baissier).
-    Zone d'accumulation institutionnelle avant un mouvement fort.
-    Image 3, 17.
-    """
-    if len(c) < 20: return False
-    # Zone de demande = range serré suivi d'une bougie impulsive
-    impulse_thresh = atr(c) * 1.5
-    for i in range(5, min(25, len(c)-3)):
-        cv = c[-i]
-        body = abs(cv["c"] - cv["o"])
-        if body < impulse_thresh: continue
-        # Bougie impulsive dans le bon sens
-        if bias == "BULLISH" and cv["c"] > cv["o"]:
-            # Range serré avant l'impulsion
-            pre_range = max(x["h"] for x in c[-i-5:-i]) - min(x["l"] for x in c[-i-5:-i])
-            if pre_range < atr(c) * 0.8:
-                # Le prix reteste-t-il cette zone ?
-                zone_lo = min(cv["o"], cv["c"])
-                zone_hi = max(cv["o"], cv["c"])
-                lp = c[-1]["c"]
-                if zone_lo * 0.999 <= lp <= zone_hi * 1.001:
-                    return True
-        if bias == "BEARISH" and cv["c"] < cv["o"]:
-            pre_range = max(x["h"] for x in c[-i-5:-i]) - min(x["l"] for x in c[-i-5:-i])
-            if pre_range < atr(c) * 0.8:
-                zone_lo = min(cv["o"], cv["c"])
-                zone_hi = max(cv["o"], cv["c"])
-                lp = c[-1]["c"]
-                if zone_lo * 0.999 <= lp <= zone_hi * 1.001:
-                    return True
-    return False
-
-def pat_fvg_fib_confluence(c, bias):
-    """
-    FVG + Niveau Fibonacci en confluence.
-    Le prix reteste un FVG qui coïncide avec Fib 0.5-0.618.
-    Images 9, 10, 15.
-    """
-    if len(c) < 30: return False
-    fvg_z = fvg(c, bias, look=40)
-    if not fvg_z: return False
-    H_sw, L_sw = swings(c, n=3)
-    if not H_sw or not L_sw: return False
-    sh = H_sw[-1][1]; sl_ = L_sw[-1][1]
-    rng = sh - sl_
-    if rng <= 0: return False
-    # Niveaux Fibonacci clés
-    fib50 = sh - rng * 0.50
-    fib618 = sh - rng * 0.618
-    fib500_lo = min(fib50, fib618) * 0.999
-    fib618_hi = max(fib50, fib618) * 1.001
-    # FVG dans la zone Fib ?
-    fvg_mid = (fvg_z[0] + fvg_z[1]) / 2
-    return fib500_lo <= fvg_mid <= fib618_hi
-
-def pat_idm_sell_trap(c, bias):
-    """
-    IDM / Inducement / Sell Trap (ICT).
-    Faux signal dans une direction avant le vrai mouvement.
-    Le prix fait un spike bas (liquidity grab) puis repart dans le biais.
-    Image 19.
-    """
-    if len(c) < 15: return False
-    lp = c[-1]["c"]
-    a  = atr(c)
-    # Spike récent + retour rapide
-    for i in range(2, 8):
-        spike = c[-i]
-        if bias == "BULLISH":
-            # Spike bas suivi de clôtures haussières
-            if spike["l"] < min(x["l"] for x in c[-i-5:-i]):
-                if all(x["c"] > x["o"] for x in c[-i+1:-1]):
-                    return True
-        else:
-            # Spike haut suivi de clôtures baissières
-            if spike["h"] > max(x["h"] for x in c[-i-5:-i]):
-                if all(x["c"] < x["o"] for x in c[-i+1:-1]):
-                    return True
-    return False
-
-def pat_lh_breakout(c, bias):
-    """
-    Lower High Breakout (haussier) / Higher Low Breakdown (baissier).
-    Cassure d'une LH en tendance baissière → retournement haussier.
-    Images 5, 9, 20.
-    """
-    if len(c) < 20: return False
-    H_sw, L_sw = swings(c, n=4)
-    lp = c[-1]["c"]
-
-    if bias == "BULLISH" and len(H_sw) >= 3:
-        # Séquence LH, LH, puis cassure → HH
-        h1, h2, h3 = H_sw[-3][1], H_sw[-2][1], H_sw[-1][1]
-        was_downtrend = h2 < h1  # LH
-        breakout = h3 > h2 and lp > h2  # cassure de la LH
-        return was_downtrend and breakout
-
-    if bias == "BEARISH" and len(L_sw) >= 3:
-        l1, l2, l3 = L_sw[-3][1], L_sw[-2][1], L_sw[-1][1]
-        was_uptrend = l2 > l1  # HL
-        breakdown = l3 < l2 and lp < l2  # cassure du HL
-        return was_uptrend and breakdown
-
-    return False
-
-def pat_fvg_filled_retest(c, bias):
-    """
-    FVG Filled → retest du niveau après remplissage.
-    Après que le FVG est comblé, le niveau devient support/résistance.
-    Image 15.
-    """
-    if len(c) < 30: return False
-    # Chercher un FVG ancien (comblé) qui sert de niveau de retest
-    scan = c[-40:] if len(c) >= 40 else c
-    lp = c[-1]["c"]
-    for i in range(5, len(scan)-5):
-        cv1, cv2, cv3 = scan[i-1], scan[i], scan[i+1]
-        if bias == "BULLISH":
-            fl, fh = cv1["h"], cv3["l"]
-            if fh > fl:
-                # FVG comblé si le prix est passé en dessous de fl
-                gap_comble = any(x["l"] < fl for x in scan[i+2:])
-                # Retest : prix revient sur fl
-                if gap_comble and abs(lp - fl) / (fl + 0.0001) < 0.003:
-                    return True
-        else:
-            fh2, fl2 = cv1["l"], cv3["h"]
-            if fh2 > fl2:
-                gap_comble = any(x["h"] > fh2 for x in scan[i+2:])
-                if gap_comble and abs(lp - fh2) / (fh2 + 0.0001) < 0.003:
-                    return True
-    return False
-
-def pat_descending_triangle_fakeout(c, bias):
-    """
-    Triangle descendant + Fakeout (image 6, 11).
-    Faux breakout sous le support horizontal → retournement haussier.
-    Triangle ascendant + fakeout haut → retournement baissier.
-    """
-    if len(c) < 20 or bias != "BULLISH": return False
-    # Support horizontal : plusieurs touches du même niveau bas
-    lows = [x["l"] for x in c[-20:]]
-    avg_low = sum(sorted(lows)[:5]) / 5  # moyenne des 5 plus bas
-    touches = sum(1 for l in lows if abs(l - avg_low) / (avg_low + 0.0001) < 0.002)
-    if touches < 3: return False
-    # Fakeout : dernier bas en dessous, puis clôture au-dessus
-    last = c[-1]; prev = c[-2]
-    fakeout = prev["l"] < avg_low and last["c"] > avg_low and last["c"] > last["o"]
-    return fakeout
-
-# ══════════════════════════════════════════════════════
-#  🕐 AMD — Accumulation / Manipulation / Distribution
-#  Détecte la phase de marché sur M15/M30 pour filtrer
-#  les entrées dans la bonne phase (Distribution=entrée)
-# ══════════════════════════════════════════════════════
-
-def detect_amd_phase(c, session_name=""):
-    """
-    Détecte la phase AMD (ICT) sur les dernières bougies.
-    Retourne : ("ACCUMULATION"|"MANIPULATION"|"DISTRIBUTION"|"UNKNOWN", badge, score_adj)
-
-    Logique temporelle ICT :
-    - Accumulation  : range serré, volume faible (00h-08h UTC)
-    - Manipulation  : fakeout / stop hunt soudain (08h-10h / 13h-15h UTC)
-    - Distribution  : tendance directionnelle franche (10h-13h / 15h-20h UTC)
-    """
-    if not c or len(c) < 20:
-        return "UNKNOWN", "", 0
-
-    # Mesures de base
-    recent  = c[-20:]
-    bodies  = [abs(x["c"] - x["o"]) for x in recent]
-    ranges_ = [x["h"] - x["l"]     for x in recent]
-    avg_body = sum(bodies) / len(bodies)  if bodies  else 0.001
-    avg_rng  = sum(ranges_) / len(ranges_) if ranges_ else 0.001
-
-    last5   = c[-5:]
-    last3   = c[-3:]
-    lp      = c[-1]["c"]
-
-    # ── Accumulation : bougies serrées, peu de mouvement ──────────
-    tight = sum(1 for b in bodies[-10:] if b < avg_body * 0.5)
-    if tight >= 7:
-        return "ACCUMULATION", "⏳ Accum", -5   # phase d'attente → pénalité légère
-
-    # ── Manipulation : spike soudain + rejet (stop hunt) ──────────
-    # 1 ou 2 bougies avec wick > 2× corps = manipulation
-    spike_count = 0
-    for cv in last5:
-        body = abs(cv["c"] - cv["o"])
-        wick_up   = cv["h"] - max(cv["c"], cv["o"])
-        wick_down = min(cv["c"], cv["o"]) - cv["l"]
-        if body > 0 and (wick_up > body * 2 or wick_down > body * 2):
-            spike_count += 1
-    if spike_count >= 1:
-        return "MANIPULATION", "🪤 Manip", +8   # stop hunt = bon point d'entrée après
-
-    # ── Distribution : bougies directionnelles consécutives ───────
-    bull_candles = sum(1 for x in last5 if x["c"] > x["o"])
-    bear_candles = sum(1 for x in last5 if x["c"] < x["o"])
-    if bull_candles >= 3 or bear_candles >= 3:
-        return "DISTRIBUTION", "📈 Distrib", +5  # tendance en cours → confirme
-
-    return "UNKNOWN", "", 0
-
-
-def confirmation_candle(c, bias, pip_size=0.0001):
-    """
-    Bougie de confirmation M15/M30 (ICT/SMC).
-    Retourne (True, badge, score_bonus) si une bougie de confirmation
-    est présente sur les 3 dernières bougies.
-
-    Setups détectés :
-    - Engulfing         : bougie englobe le corps précédent
-    - Pin Bar / Hammer  : wick long + clôture opposée
-    - BOS candle        : cassure de structure + clôture au-delà du swing
-    - FVG retest candle : prix revient en FVG et rebondit
-    - OB rejection      : rejet depuis Order Block (wick + clôture opposée)
-    - CHoCH candle      : bougie qui change la structure (clôture > dernier HH ou < LL)
-    """
-    if not c or len(c) < 5:
-        return False, "", 0
-
-    last = c[-1]; prev = c[-2]; prev2 = c[-3]
-    body_last  = abs(last["c"] - last["o"])
-    body_prev  = abs(prev["c"] - prev["o"])
-    rng_last   = last["h"] - last["l"]
-    wick_up    = last["h"] - max(last["c"], last["o"])
-    wick_down  = min(last["c"], last["o"]) - last["l"]
-
-    if rng_last == 0: return False, "", 0
-    body_ratio = body_last / rng_last
-
-    if bias == "BULLISH":
-        # 1. Bullish Engulfing : corps dernier > corps précédent, clôture haussière
-        if (last["c"] > last["o"] and
-            last["o"] <= prev["c"] and last["c"] >= prev["o"] and
-            body_last > body_prev * 1.1):
-            return True, "Engulf ✓", 18
-
-        # 2. Hammer / Pin Bar : wick bas long, petit corps haut de range
-        if (last["c"] > last["o"] and
-            wick_down > body_last * 2.0 and
-            wick_up < body_last * 0.5 and
-            body_ratio > 0.15):
-            return True, "Hammer ✓", 15
-
-        # 3. BOS bullish : clôture au-dessus du dernier HH
-        highs = [x["h"] for x in c[-20:-1]]
-        if highs and last["c"] > max(highs) and last["c"] > last["o"]:
-            return True, "BOS ✓", 20
-
-        # 4. CHoCH bullish : clôture au-dessus du dernier pivot haut intermédiaire
-        if len(c) >= 10:
-            mid_highs = [x["h"] for x in c[-10:-2]]
-            if mid_highs and last["c"] > max(mid_highs) * 1.0002:
-                return True, "CHoCH ✓", 16
-
-        # 5. OB rejection : corps haussier après wick bas dans zone OB
-        if (wick_down > body_last * 1.5 and
-            last["c"] > last["o"] and
-            last["c"] > prev["h"]):
-            return True, "OB Rejet ✓", 14
-
-    else:  # BEARISH
-        # 1. Bearish Engulfing
-        if (last["c"] < last["o"] and
-            last["o"] >= prev["c"] and last["c"] <= prev["o"] and
-            body_last > body_prev * 1.1):
-            return True, "Engulf ✓", 18
-
-        # 2. Shooting Star / Pin Bar baissier
-        if (last["c"] < last["o"] and
-            wick_up > body_last * 2.0 and
-            wick_down < body_last * 0.5 and
-            body_ratio > 0.15):
-            return True, "Shooting★ ✓", 15
-
-        # 3. BOS bearish : clôture en dessous du dernier LL
-        lows = [x["l"] for x in c[-20:-1]]
-        if lows and last["c"] < min(lows) and last["c"] < last["o"]:
-            return True, "BOS ✓", 20
-
-        # 4. CHoCH bearish
-        if len(c) >= 10:
-            mid_lows = [x["l"] for x in c[-10:-2]]
-            if mid_lows and last["c"] < min(mid_lows) * 0.9998:
-                return True, "CHoCH ✓", 16
-
-        # 5. OB rejection baissier
-        if (wick_up > body_last * 1.5 and
-            last["c"] < last["o"] and
-            last["c"] < prev["l"]):
-            return True, "OB Rejet ✓", 14
-
-    return False, "", 0
-
-
-def smc_pa_setups(c, bias):
-    """
-    Détecte tous les setups SMC + Price Action sur c (M15 ou M30).
-    Retourne liste de (nom_setup, score_bonus) triée par score décroissant.
-
-    Setups complets v21.5 (basés sur images de référence) :
-    ── SMC Institutionnel ──────────────────────────────
-    - Order Block (OB)         : zone d'intérêt institutionnel
-    - Breaker Block (BB)       : OB cassé → support/résistance
-    - Fair Value Gap (FVG)     : déséquilibre + retest
-    - FVG Filled + Retest      : FVG comblé → niveau de retest
-    - FVG + Fib Confluence     : FVG aligné avec Fib 0.5-0.618
-    - CHoCH                    : changement de structure x2+
-    - Break of Structure (BOS) : cassure confirmée par clôture
-    - MSS                      : Market Structure Shift
-    - Demand / Supply Zone     : zone institutionnelle d'accumulation
-    - IDM / Inducement         : faux signal → vrai mouvement
-    ── Liquidité ───────────────────────────────────────
-    - Liquidity Sweep          : prise de liquidité externe
-    - Buy/Sell Side Liquidity  : pool de liquidité ciblé
-    - Equal Highs / Lows       : EQH/EQL pris
-    - OTE Zone (Fib 0.62-0.79) : zone optimale d'entrée
-    ── Price Action ────────────────────────────────────
-    - Double Top / Double Bot  : pattern classique confirmé
-    - Head & Shoulders / IH&S  : pattern classique confirmé
-    - HH Failed / LL Failed    : échec de continuation
-    - LH Breakout              : cassure d'une Lower High
-    - Fakeout + retournement   : faux breakout + rejet
-    - Triangle Fakeout         : triangle + spike + retournement
-    - Breakout + Retest        : cassure d'un niveau clé + pullback
-    """
-    if not c or len(c) < 20:
-        return []
-
-    setups = []
-    lp = c[-1]["c"]
-
-    # ── ORDRE BLOCK ──────────────────────────────────────────────
-    obs = breakers(c, bias, lookback=60)
-    if obs:
-        setups.append(("OB", 15))
-
-    # ── BREAKER BLOCK ────────────────────────────────────────────
-    bb_ok, bb_zone = pat_breaker_block(c, bias)
-    if bb_ok:
-        setups.append(("Breaker Block", 18))
-
-    # ── FAIR VALUE GAP ───────────────────────────────────────────
-    fvg_z = fvg(c, bias, look=40)
-    if fvg_z:
-        setups.append(("FVG", 12))
-
-    # ── FVG FILLED + RETEST ──────────────────────────────────────
-    if pat_fvg_filled_retest(c, bias):
-        setups.append(("FVG Retest", 13))
-
-    # ── FVG + FIBONACCI CONFLUENCE ───────────────────────────────
-    if pat_fvg_fib_confluence(c, bias):
-        setups.append(("FVG+Fib", 16))
-
-    # ── CHoCH SÉQUENTIEL ─────────────────────────────────────────
-    cd, cc = choch_seq(c)
-    if cc >= 2 and cd == bias:
-        setups.append(("CHoCHx{}".format(cc), 10 + cc * 3))
-
-    # ── BREAK OF STRUCTURE ───────────────────────────────────────
-    highs = [x["h"] for x in c[:-3]]
-    lows  = [x["l"] for x in c[:-3]]
-    if bias == "BULLISH" and highs and lp > max(highs[-20:]):
-        setups.append(("BOS", 14))
-    if bias == "BEARISH" and lows and lp < min(lows[-20:]):
-        setups.append(("BOS", 14))
-
-    # ── DEMAND / SUPPLY ZONE ────────────────────────────────────
-    if pat_demand_supply_zone(c, bias):
-        setups.append(("Demand/Supply", 14))
-
-    # ── IDM / INDUCEMENT / SELL TRAP ────────────────────────────
-    if pat_idm_sell_trap(c, bias):
-        setups.append(("IDM Trap", 15))
-
-    # ── LIQUIDITY SWEEP ──────────────────────────────────────────
-    liq = agent_liquidity(c, bias, lookback=30)
-    if liq:
-        setups.append((liq["label"].replace(" ✓", ""), liq["score"]))
-
-    # ── OTE FIBONACCI ────────────────────────────────────────────
-    H_sw, L_sw = swings(c, n=3)
-    if H_sw and L_sw:
-        sh = H_sw[-1][1]; sl_ = L_sw[-1][1]
-        lo, hi = ote_zone(sh, sl_, bias)
-        if lo and hi and lo <= lp <= hi:
-            setups.append(("OTE Fibo", 14))
-
-    # ── EQH / EQL ────────────────────────────────────────────────
-    eq_h, eq_l = eqh_eql(c)
-    if bias == "BEARISH" and eq_h and abs(lp - eq_h) / eq_h < 0.003:
-        setups.append(("EQH", 10))
-    if bias == "BULLISH" and eq_l and abs(lp - eq_l) / eq_l < 0.003:
-        setups.append(("EQL", 10))
-
-    # ── DOUBLE TOP / BOTTOM ──────────────────────────────────────
-    if pat_double_top_bottom(c, bias):
-        setups.append(("Double Top/Bot", 12))
-
-    # ── HEAD & SHOULDERS ─────────────────────────────────────────
-    if pat_head_shoulders(c, bias):
-        setups.append(("H&S", 12))
-
-    # ── HH FAILED / LL FAILED ───────────────────────────────────
-    if pat_hh_failed(c, bias):
-        setups.append(("HH/LL Failed", 12))
-
-    # ── LH BREAKOUT / HL BREAKDOWN ──────────────────────────────
-    if pat_lh_breakout(c, bias):
-        setups.append(("LH Breakout", 14))
-
-    # ── FAKEOUT ICT ──────────────────────────────────────────────
-    if pat_fakeout_ict(c, bias):
-        setups.append(("Fakeout ICT", 14))
-
-    # ── TRIANGLE FAKEOUT ─────────────────────────────────────────
-    if pat_descending_triangle_fakeout(c, bias):
-        setups.append(("Triangle BO", 13))
-
-    # ── BREAKOUT + RETEST ────────────────────────────────────────
-    if pat_breakout_retest(c, bias):
-        setups.append(("BO+Retest", 16))
-
-    # ── DAILY HIGH / DAILY LOW (PDH/PDL Sweep ICT) ───────────────
-    dhl_ok, _pdh, _pdl = pat_daily_high_low(c, bias)
-    if dhl_ok:
-        label = "PDL Sweep" if bias == "BULLISH" else "PDH Sweep"
-        setups.append((label, 18))
-
-    # ── CRT — Candle Range Theory ─────────────────────────────────
-    if pat_crt(c, bias):
-        label = "CRT Bull" if bias == "BULLISH" else "CRT Bear"
-        setups.append((label, 19))
-
-    # ── HH / LL CONFIRMÉ (continuation de structure) ─────────────
-    if pat_hh_ll_confirmed(c, bias):
-        label = "HH Confirm" if bias == "BULLISH" else "LL Confirm"
-        setups.append((label, 15))
-
-    # ── SILVER BULLET ICT ─────────────────────────────────────────
-    if pat_silver_bullet(c, bias):
-        setups.append(("Silver Bullet", 20))
-
-    # ── NWOG / NDOG (Opening Gap) ─────────────────────────────────
-    if pat_nwog_ndog(c, bias):
-        setups.append(("NDOG Gap", 16))
-
-    # ── MIDNIGHT OPEN ICT ─────────────────────────────────────────
-    if pat_midnight_open(c, bias):
-        setups.append(("Midnight Open", 15))
-
-    # Trier par score décroissant
-    setups.sort(key=lambda x: x[1], reverse=True)
-    return setups
-
 def agent_analyze(m, score_min, news_ok, q):
     """
-    Analyse multi-timeframe v21.4 :
-      H4  → tendance de fond (obligatoire)
-      M15 → structure + Order Block + liquidité (obligatoire)
-      M30 → confirmation intermédiaire (optionnel si M15 OK)
-      Bougie de confirmation M15/M30 OBLIGATOIRE (Engulfing/Hammer/BOS/CHoCH)
-      AMD → phase de marché (filtre Accumulation)
-      SMC + Price Action → tous les setups scorés
+    Analyse multi-timeframe v11 :
+      H1  → tendance de fond (obligatoire)
+      M15 → Order Block + structure (obligatoire)
+      M5  → confirmation d'entrée précise (nouveau — fortement pondéré)
       M1  → ultra-précision optionnelle (bonus léger)
 
     RR minimum : 3.0 normal / 1.5 scalp week-end
-    Obligatoires : biais H4 + OB M15 + liquidité M15
+    Obligatoires : biais H1 + OB M15 + liquidité M15
     M5 aligné → +bonus fort  |  M5 contraire → pénalité
     """
     try:
         sn, _, _, _ = get_session()
         mode   = get_trade_mode(m)
-        rr_min = 1.5 if mode == "SCALP" else 3.0
+        rr_min = 1.5 if mode == "SCALP" else RR_MIN_GLOBAL  # RR min global = 3.0
 
         # ── Filtre session FOREX ──────────────────────────────────
         if m["cat"] == "FOREX" and sn not in ("LONDON_KZ", "OVERLAP", "NY", "LONDON"):
@@ -2817,17 +1610,17 @@ def agent_analyze(m, score_min, news_ok, q):
                    "reason": "Session FOREX inactive ({})".format(sn), "improv": False})
             return
 
-        # ── H4 : tendance de fond (obligatoire) ──────────────────
-        h1 = fetch_c(m["sym"], "4h", "60d") or fetch_c(m["sym"], "1d", "180d")
+        # ── H1 : tendance de fond (obligatoire) ──────────────────
+        h1 = fetch_c(m["sym"], "1h", "30d") or fetch_c(m["sym"], "4h", "60d")
         if not h1 or len(h1) < 10:
             q.put({"name": m["name"], "cat": m["cat"], "found": False,
-                   "reason": "H4 insuffisant"}); return
+                   "reason": "H1 insuffisant"}); return
         b, bos, bt = detect_bias(h1)
         if b == "NEUTRAL":
             q.put({"name": m["name"], "cat": m["cat"], "found": False,
-                   "reason": "Neutre H4"}); return
+                   "reason": "Neutre H1"}); return
 
-        # ── Confirmation tendance H4 ──────────────────────────────
+        # ── Confirmation tendance H1 ──────────────────────────────
         cd2, cc2 = choch_seq(h1)
         h1_closes = [x["c"] for x in h1[-50:]]
         h1_ema20  = sum(h1_closes[-20:]) / 20 if len(h1_closes) >= 20 else h1_closes[-1]
@@ -2842,7 +1635,7 @@ def agent_analyze(m, score_min, news_ok, q):
         if b == "BEARISH" and len(L_sw) >= 2 and L_sw[-1][1] < L_sw[-2][1]: trend_score += 1
         if trend_score == 0:
             q.put({"name": m["name"], "cat": m["cat"], "found": False,
-                   "reason": "Tendance H4 faible"}); return
+                   "reason": "Tendance H1 faible"}); return
 
         time.sleep(0.08)
 
@@ -2888,116 +1681,81 @@ def agent_analyze(m, score_min, news_ok, q):
         if fund_adj != 0:
             sc = min(max(0, sc + fund_adj), 115)
 
-        # ══════════════════════════════════════════════════════
-        #  TIMEFRAME D'ENTRÉE : M15 principal, M30 fallback
-        #  Confirmation : bougie de confirmation obligatoire
-        #  AMD : phase de marché (Accumulation/Manip/Distrib)
-        #  SMC + Price Action : tous les setups détectés
-        # ══════════════════════════════════════════════════════
+        # ── M5 : TIMEFRAME D'ENTRÉE (nouveau v11) ─────────────────
+        # Charge M5 une seule fois — utilisé pour patterns ET entrée
+        m5_raw = fetch_c(m["sym"], "5m", "3d")
+        m5_conf = {
+            "ok": False, "bias_ok": False, "score": 0,
+            "badges": [], "liq": None, "fvg": None, "ob": None,
+            "choch": 0, "details": "M5 indispo"
+        }
+        if m5_raw and len(m5_raw) >= 15:
+            m5_sl    = m5_raw[-50:] if len(m5_raw) >= 50 else m5_raw
+            m5_bias, _, m5_bt = detect_bias(m5_sl)
+            m5_liq   = agent_liquidity(m5_sl[-20:], b) if len(m5_sl) >= 20 else None
+            m5_fvg   = fvg(m5_sl, b, look=20)
+            m5_obs   = breakers(m5_sl, b)
+            m5_cd, m5_cc = choch_seq(m5_sl)
+            m5_ema   = sum(x["c"] for x in m5_sl[-10:]) / 10 if len(m5_sl) >= 10 else lp
 
-        # ── H4 : confirmation sur le timeframe de scan principal ──
-        # h1 est déjà les données H4 (chargées plus haut comme tendance)
-        market_name = m["name"]  # alias utilisé pour filtres Tier
-        h4_conf_ok, h4_conf_badge, h4_conf_bonus = confirmation_candle(h1, b, m["pip"])
-        h4_amd, h4_amd_badge, h4_amd_adj = detect_amd_phase(h1, sn)
-        h4_setups = smc_pa_setups(h1, b)  # setups sur H4
-        h4_pa_score = min(sum(s for _, s in h4_setups), 40)
-        h4_pa_badges = [name for name, _ in h4_setups[:3]]
-        if h4_conf_ok:
-            sc = min(sc + h4_conf_bonus + 5, 115)  # bonus +5 car H4 = TF principal
-        if h4_pa_score > 0:
-            sc = min(sc + h4_pa_score, 115)
-        if h4_amd_adj != 0:
-            sc = min(max(0, sc + h4_amd_adj), 115)
-        if h4_amd == "ACCUMULATION" and market_name not in TIER1_MARKETS:
-            q.put({"name": m["name"], "cat": m["cat"], "found": False,
-                   "reason": "H4 AMD: Accumulation", "improv": False}); return
+            m5_bonus  = 0
+            m5_badges = []
 
-        # ── Chargement M30 (structure intermédiaire) ──────────────
-        m30 = fetch_c(m["sym"], "30m", "15d")
-        m30_ok = bool(m30 and len(m30) >= 15)
+            # Biais M5 aligné avec H1 → fondation
+            if m5_bias == b:
+                m5_bonus += 10
+                m5_badges.append("M5-Trend✓")
+                m5_conf["bias_ok"] = True
+            # Liquidité M5 (stop hunt / sweep / EQH-EQL)
+            if m5_liq:
+                m5_bonus += 15
+                m5_badges.append("M5-{}".format(m5_liq["label"].replace(" ✓", "")))
+                m5_conf["liq"] = m5_liq
+            # FVG M5 actif
+            if m5_fvg:
+                m5_bonus += 10
+                m5_badges.append("M5-FVG✓")
+                m5_conf["fvg"] = m5_fvg
+            # Order Block M5
+            if m5_obs:
+                m5_bonus += 8
+                m5_badges.append("M5-OB✓")
+                m5_conf["ob"] = m5_obs[0]
+            # CHoCH M5 (confirmation de changement de structure)
+            if m5_cc >= 2 and m5_cd == b[:4].rstrip("ISH"):
+                m5_bonus += 7
+                m5_badges.append("M5-CHoCH✓")
+                m5_conf["choch"] = m5_cc
 
-        # ── Choix du TF d'entrée : M15 prioritaire, M30 si M15 KO ─
-        entry_tf   = m15        # M15 déjà chargé
-        entry_tf_name = "M15"
-        if not m15 or len(m15) < 20:
-            if m30_ok:
-                entry_tf      = m30
-                entry_tf_name = "M30"
-            else:
-                q.put({"name": m["name"], "cat": m["cat"], "found": False,
-                       "reason": "M15/M30 indispo"}); return
+            m5_conf["score"]   = m5_bonus
+            m5_conf["badges"]  = m5_badges
+            m5_conf["ok"]      = m5_bonus >= 10  # au moins 1 confirmation M5
 
-        etf = entry_tf  # alias court
+            detail_parts = []
+            if m5_conf["bias_ok"]: detail_parts.append("biais✓")
+            if m5_conf["liq"]:     detail_parts.append("liq✓")
+            if m5_conf["fvg"]:     detail_parts.append("fvg✓")
+            if m5_conf["ob"]:      detail_parts.append("ob✓")
+            m5_conf["details"] = " · ".join(detail_parts) if detail_parts else "pas de setup"
 
-        # ── AMD : phase de marché sur TF d'entrée ─────────────────
-        amd_phase, amd_badge, amd_adj = detect_amd_phase(etf, sn)
-        if amd_phase == "ACCUMULATION":
-            # Phase d'attente → pas d'entrée sauf score très élevé
-            if sc < s_min + 15:
-                q.put({"name": m["name"], "cat": m["cat"], "found": False,
-                       "reason": "AMD: Accumulation (attente)", "improv": False}); return
-        if amd_adj != 0:
-            sc = min(max(0, sc + amd_adj), 115)
+            if m5_conf["ok"]:
+                sc = min(sc + m5_bonus, 115)     # fort bonus si M5 confirme
+            elif not m5_conf["bias_ok"]:
+                sc = max(0, sc - 12)              # M5 contraire → pénalité
+        else:
+            m5_raw = None  # pas de données M5
 
-        # ── BOUGIE DE CONFIRMATION (OBLIGATOIRE) ──────────────────
-        conf_ok, conf_badge, conf_bonus = confirmation_candle(etf, b, m["pip"])
-        if not conf_ok:
-            q.put({"name": m["name"], "cat": m["cat"], "found": False,
-                   "reason": "Pas de bougie confirmation {}".format(entry_tf_name),
-                   "improv": False}); return
-        sc = min(sc + conf_bonus, 115)
-
-        # ── SETUPS SMC + PRICE ACTION sur TF d'entrée ─────────────
-        pa_setups = smc_pa_setups(etf, b)
-        pa_score  = min(sum(s for _, s in pa_setups), 50)  # cap +50
-        pa_badges = [name for name, _ in pa_setups]
-        if pa_score > 0:
-            sc = min(sc + pa_score, 115)
-
-        # ── Analyse M30 (si M15 est le TF principal) ──────────────
-        m30_conf = {"ok": False, "bias_ok": False, "score": 0, "badges": [], "details": "M30 indispo"}
-        if m30_ok and entry_tf_name == "M15":
-            m30_sl   = m30[-50:] if len(m30) >= 50 else m30
-            m30_bias, _, _ = detect_bias(m30_sl)
-            m30_liq  = agent_liquidity(m30_sl[-20:], b) if len(m30_sl) >= 20 else None
-            m30_fvg  = fvg(m30_sl, b, look=20)
-            m30_obs  = breakers(m30_sl, b)
-            m30_cd, m30_cc = choch_seq(m30_sl)
-            m30_bonus = 0; m30_bdg = []
-
-            if m30_bias == b:
-                m30_bonus += 10; m30_bdg.append("M30-Trend✓")
-                m30_conf["bias_ok"] = True
-            if m30_liq:
-                m30_bonus += 12; m30_bdg.append("M30-{}".format(m30_liq["label"].replace(" ✓","")))
-            if m30_fvg:
-                m30_bonus += 8;  m30_bdg.append("M30-FVG✓")
-            if m30_obs:
-                m30_bonus += 8;  m30_bdg.append("M30-OB✓")
-            if m30_cc >= 2:
-                m30_bonus += 7;  m30_bdg.append("M30-CHoCH✓")
-
-            m30_conf["score"]  = m30_bonus
-            m30_conf["badges"] = m30_bdg
-            m30_conf["ok"]     = m30_bonus >= 10
-            m30_conf["details"] = " · ".join(m30_bdg) if m30_bdg else "pas de setup M30"
-            if m30_conf["ok"]:
-                sc = min(sc + m30_bonus, 115)
-            elif not m30_conf["bias_ok"]:
-                sc = max(0, sc - 8)  # M30 contraire → pénalité légère
-
-        # ── Alias m5_conf → m30_conf pour compatibilité downstream ─
-        m5_conf = m30_conf  # renommé pour compatibilité structure signal
-        m5_raw  = m30       # pour pattern_score_m5
-
-        # ── Patterns visuels sur TF d'entrée ──────────────────────
-        pat_bonus, pat_badges = pattern_score_m5(etf, b)
+        # ── Patterns M5 (visuels — bonus score) ──────────────────
+        pat_bonus, pat_badges = pattern_score_m5(m5_raw, b) if m5_raw else (0, [])
         if pat_bonus > 0:
             sc = min(sc + pat_bonus, 115)
 
-        # ── M5 bonus optionnel (précision entrée) ─────────────────
-        m1 = None  # M1 supprimé — entrée sur M15/M30 uniquement
+        # ── M1 bonus (ultra-précision optionnelle) ────────────────
+        m1 = fetch_c(m["sym"], "1m", "2d")
+        if m1 and len(m1) >= 5:
+            m1_bias, _, _ = detect_bias(m1[-30:] if len(m1) >= 30 else m1)
+            if m1_bias == b:
+                sc = min(sc + 8, 115)
 
         # ── Mémoire IA ────────────────────────────────────────────
         _tmp_badges = []
@@ -3018,20 +1776,10 @@ def agent_analyze(m, score_min, news_ok, q):
         a_pct = a / (lp + 0.0001)
         s_min = score_min + (m.get("vol", 3) - 3) * 2
 
-        # ── Priorité paire + filtre Tier ─────────────────────────
+        # ── Priorité paire ────────────────────────────────────────
         prio = MARKET_PRIORITY.get(m["name"], 0)
         if prio > 0:
             sc = min(sc + prio, 115)
-
-        # ── Filtre setups selon Tier du marché ────────────────────
-        # Tier 3 : ne garder que les setups les plus fiables
-        if market_name not in TIER1_MARKETS and market_name not in TIER2_MARKETS:
-            # Tier 3 : filtrer pa_setups — garder seulement les autorisés
-            pa_setups = [(name, score) for name, score in pa_setups
-                         if name in TIER3_SETUPS_ALLOWED or name.startswith("CHoCH") or
-                         name.startswith("Sweep") or name.startswith("EQ")]
-            # Score minimum plus élevé pour Tier 3
-            s_min = max(s_min, s_min + 8)  # +8 pts requis pour Tier 3
 
         sig = None
 
@@ -3045,29 +1793,23 @@ def agent_analyze(m, score_min, news_ok, q):
             # Construire les badges finaux (ordre logique : HTF → LTF)
             all_badges = [liq["label"]]
             if in_ote:              all_badges.append("OTE ✓")
-            if fvg_z:               all_badges.append("FVG {} ✓".format(entry_tf_name))
-            if cc2 >= 2:            all_badges.append("CHoCHx{} H4 ✓".format(cc2))
-            # H4 : confirmations sur le TF principal
-            if h4_conf_badge:       all_badges.append("H4 {} ✓".format(h4_conf_badge))
-            if h4_amd_badge:        all_badges.append(h4_amd_badge)
-            for pa_name in h4_pa_badges: all_badges.append("H4·{}".format(pa_name))
-            # Entrée M15/M30
-            if conf_badge:          all_badges.append("{} {}".format(entry_tf_name, conf_badge))
-            if amd_badge:           all_badges.append(amd_badge)
-            for pa_name, _ in pa_setups[:2]:  all_badges.append(pa_name)
-            all_badges.extend(m30_conf["badges"])    # badges M30
+            if fvg_z:               all_badges.append("FVG M15 ✓")
+            if cc2 >= 2:            all_badges.append("CHoCHx{} H1 ✓".format(cc2))
+            all_badges.extend(m5_conf["badges"])     # badges M5 inline
             if pat_badges:          all_badges.extend(pat_badges)
             if fund_badge:          all_badges.append(fund_badge)
             if mem_badge:           all_badges.append(mem_badge)
             if mode == "SCALP":     all_badges.append("⚡ SCALP")
+            if m1 and len(m1) >= 5: all_badges.append("M1✓")
 
             # Tag timeframe selon confirmations disponibles
-            # H4 = tendance de fond, entrée = M15 (ou M30 fallback)
-            tf_parts = [entry_tf_name]           # "M15" ou "M30"
-            if m30_conf["ok"] and entry_tf_name == "M15":
-                tf_parts.append("M30")           # M30 confirme aussi
-            tf_parts.append("H4")               # tendance de fond
-            tf_tag = "+".join(tf_parts)          # ex: "M15+M30+H4"
+            # H1 = tendance de fond (interne), entrée = M5 max M15
+            if m5_conf["ok"]:
+                tf_parts = ["M5", "M15"]
+            else:
+                tf_parts = ["M15"]
+            if m1 and len(m1) >= 5: tf_parts.append("M1")
+            tf_tag = "+".join(tf_parts)  # ex: "M5+M15" ou "M15"
 
             dp = 2 if e > 1000 else (3 if e > 10 else 5)
             f  = lambda v: round(v, dp)
@@ -3086,11 +1828,9 @@ def agent_analyze(m, score_min, news_ok, q):
                     rr   = round(gain_net / (risk + sp_p), 1) if (risk + sp_p) > 0 else 0
                     if rr >= rr_min:
                         ptp = gain_net / pip; psl = (risk + sp_p) / pip
-                        # TP2 = extension 1.618 × risque (objectif institutionnel)
-                        tp2 = f(e + risk * 5.0)
                         sig = {
                             "name": m["name"], "cat": m["cat"], "side": "BUY",
-                            "entry": f(e), "tp": f(tp), "tp2": tp2, "sl": f(sl_p), "rr": rr,
+                            "entry": f(e), "tp": f(tp), "sl": f(sl_p), "rr": rr,
                             "score": sc, "score_min": s_min, "atr": f(a), "sp": sp,
                             "bias": b, "btype": bt,
                             "g001": round(ptp * 0.01, 2), "g01": round(ptp * 0.1, 2),
@@ -3118,11 +1858,9 @@ def agent_analyze(m, score_min, news_ok, q):
                     rr   = round(gain_net / (risk + sp_p), 1) if (risk + sp_p) > 0 else 0
                     if rr >= rr_min:
                         ptp = gain_net / pip; psl = (risk + sp_p) / pip
-                        # TP2 = extension institutionnelle (5× risque)
-                        tp2 = f(e - risk * 5.0)
                         sig = {
                             "name": m["name"], "cat": m["cat"], "side": "SELL",
-                            "entry": f(e), "tp": f(tp), "tp2": tp2, "sl": f(sl_p), "rr": rr,
+                            "entry": f(e), "tp": f(tp), "sl": f(sl_p), "rr": rr,
                             "score": sc, "score_min": s_min, "atr": f(a), "sp": sp,
                             "bias": b, "btype": bt,
                             "g001": round(ptp * 0.01, 2), "g01": round(ptp * 0.1, 2),
@@ -3144,7 +1882,9 @@ def agent_analyze(m, score_min, news_ok, q):
             if bbs and sc >= s_min:
                 reason = "RR<{:.1f}".format(rr_min)
             elif not bbs:
-                reason = "No OB {}".format(entry_tf_name)
+                reason = "No OB M15"
+            elif not m5_conf["ok"]:
+                reason = "M5 non aligné ({})".format(m5_conf["details"])
             else:
                 reason = "Score {}/{}".format(sc, s_min)
             q.put({"name": m["name"], "cat": m["cat"], "found": False,
@@ -3152,14 +1892,318 @@ def agent_analyze(m, score_min, news_ok, q):
                    "sc": sc, "s_min": s_min, "m5_ok": m5_conf["ok"]})
 
     except Exception as ex:
-        traceback.print_exc()
-        log("ERR", "agent_analyze [{}]: {}".format(m["name"], str(ex)))
         q.put({"name": m["name"], "cat": m["cat"], "found": False,
-               "reason": str(ex)[:80], "improv": False})
+               "reason": str(ex)[:40], "improv": False})
 
 # ══════════════════════════════════════════════════════════════════
 #  BINANCE IA (Crypto futures)
 # ══════════════════════════════════════════════════════════════════
+AI_C   = defaultdict(lambda: defaultdict(deque))
+AI_P   = {}
+AI_PRS = []
+AI_REG = {"regime":"RANGING","min_score":72,"risk_mult":1.0,"lev_cap":15,"label":"Init"}
+AI_OT  = {}
+AI_TC  = 0
+AI_CD  = {}
+_ai_lk = threading.Lock()
+EXCH   = {}; EXCH_TS = 0
+
+def b_get(ep, p=None):
+    try:
+        url="{}{}?{}".format(BINANCE_BASE,ep,urllib.parse.urlencode(p or {}))
+        return json.loads(http_get(url,timeout=8))
+    except: return None
+
+def bn_price(sym):
+    d=b_get("/ticker/price",{"symbol":sym}); return float(d["price"]) if d and "price" in d else None
+
+def bn_klines(sym,tf="5m",lim=60):
+    d=b_get("/klines",{"symbol":sym,"interval":tf,"limit":lim})
+    if not d or not isinstance(d,list): return None
+    return [{"ts":int(k[0]),"open":float(k[1]),"high":float(k[2]),"low":float(k[3]),"close":float(k[4]),"vol":float(k[5])} for k in d]
+
+def bn_fund(sym):
+    d=b_get("/premiumIndex",{"symbol":sym}); return float(d["lastFundingRate"])*100 if d and "lastFundingRate" in d else None
+
+def refresh_exch():
+    global EXCH_TS
+    try:
+        d=json.loads(http_get("{}/exchangeInfo".format(BINANCE_BASE),timeout=12))
+        for s in d.get("symbols",[]):
+            nm=s["symbol"]; info={"step":1.0,"minQty":0.0,"minNot":5.0,"tick":0.01}
+            for f in s.get("filters",[]):
+                if f["filterType"]=="LOT_SIZE": info["step"]=float(f["stepSize"]); info["minQty"]=float(f["minQty"])
+                elif f["filterType"]=="MIN_NOTIONAL": info["minNot"]=float(f.get("notional",5.0))
+                elif f["filterType"]=="PRICE_FILTER": info["tick"]=float(f["tickSize"])
+            EXCH[nm]=info
+        EXCH_TS=time.time(); log("AI",clr("Exchange info OK ({})".format(len(EXCH)),"g"))
+    except Exception as e: log("WARN","[EXCH] {}".format(e))
+
+def lot_calc(sym,risk,sld,entry,lev):
+    info=EXCH.get(sym,{"step":0.001,"minQty":0.001,"minNot":5.0})
+    step=info["step"]; minq=info["minQty"]; minn=info["minNot"]
+    p=max(0,round(-math.log10(step))) if step>0 else 3
+    qty=round(math.floor((risk/sld if sld>0 else 0)/step)*step,p); qty=max(qty,minq)
+    not_=qty*entry
+    if not_<minn: qty=round(math.floor(minn/entry*1.02/step)*step,p); qty=max(qty,minq); not_=qty*entry
+    ft=not_*FEE_TAKER*2
+    return {"qty":qty,"not":round(not_,4),"ft":round(ft,6),"rr":round(qty*sld+ft,4)}
+
+def regime_detect():
+    global AI_REG
+    c4=list(AI_C["BTCUSDT"].get("4h",deque()))
+    if len(c4)<20: return
+    recent=c4[-20:]
+    cl=[c["close"] for c in recent]; hi=[c["high"] for c in recent]; lo=[c["low"] for c in recent]
+    a_raw=sum(h-l for h,l in zip(hi,lo))/len(recent)
+    a_pct=a_raw/cl[-1]*100 if cl[-1]>0 else 0
+    mom=(cl[-1]-cl[0])/cl[0]*100 if cl[0]>0 else 0
+    mv=max(abs(c["close"]-c["open"])/c["open"]*100 for c in recent[-5:] if c["open"]>0)
+    if a_pct>5 or mv>8:    r="CRISIS";  ms=95; rm=0.3; lc=3
+    elif a_pct>3:           r="VOLATILE";ms=85; rm=0.6; lc=7
+    elif abs(mom)>3:        r="TRENDING";ms=70; rm=1.2; lc=20
+    elif (max(hi)-min(lo))/sum(cl)*len(cl)*100<3: r="ACCUM"; ms=76; rm=1.0; lc=15
+    else:                   r="RANGING"; ms=78; rm=0.8; lc=10
+    AI_REG={"regime":r,"min_score":ms,"risk_mult":rm,"lev_cap":lc,
+             "atr_pct":round(a_pct,2),"mom":round(mom,2),"label":r}
+    log("AI",clr("Régime: {} ATR:{:.1f}% Mom:{:.1f}%".format(r,a_pct,mom),"c"))
+
+def refresh_ai():
+    global AI_PRS
+    try:
+        d=b_get("/ticker/24hr")
+        if d and isinstance(d,list):
+            u=[t for t in d if t["symbol"].endswith("USDT") and "_" not in t["symbol"]]
+            u.sort(key=lambda t:float(t.get("quoteVolume",0)),reverse=True)
+            AI_PRS=[t["symbol"] for t in u[:25]]
+    except: pass
+    for sym in AI_PRS[:20]:
+        for tf,lim in [("5m",60),("15m",40),("1h",48),("4h",50)]:
+            c=bn_klines(sym,tf,lim)
+            if c: AI_C[sym][tf]=deque(c,maxlen=lim)
+            if tf=="5m" and c: AI_P[sym]=c[-1]["close"]
+        time.sleep(0.07)
+    regime_detect()
+    log("AI",clr("Binance {} paires OK".format(len(AI_PRS)),"g"))
+
+def ai_btc_bias():
+    s={"BULL":0,"BEAR":0}
+    for tf,w in [("5m",1),("1h",2),("4h",3)]:
+        c=list(AI_C["BTCUSDT"].get(tf,deque()))
+        if len(c)<5: continue
+        cl=[x["close"] for x in c[-10:]]
+        d=(cl[-1]-cl[0])/cl[0]*100 if cl[0]>0 else 0
+        if d>0.3: s["BULL"]+=w
+        elif d<-0.3: s["BEAR"]+=w
+    if s["BULL"]>s["BEAR"]+1: return "BULL"
+    if s["BEAR"]>s["BULL"]+1: return "BEAR"
+    return "RANGE"
+
+def ai_risk(bal,sc,am,sess):
+    if bal<15: b=0.10
+    elif bal<30: b=0.09
+    elif bal<75: b=0.08
+    else: b=0.06
+    if sc>=90: b*=1.2
+    elif sc>=80: b*=1.1
+    b*=AI_REG.get("risk_mult",1.0)
+    if "KZ" in sess or "OVERLAP" in sess: b*=1.1
+    b*=(AM_MULT**am)
+    return round(min(bal*b, bal*0.20),4)
+
+def ai_lev(sym,bal,sc):
+    if bal<15: base=5
+    elif bal<30: base=7
+    elif bal<75: base=10
+    else: base=15
+    if sc>=88: base=min(base+2,25)
+    return min(base,AI_REG.get("lev_cap",15),PAIR_MAX_LEV.get(sym,20))
+
+def ai_scan_sym(sym,bias,bal):
+    c5=list(AI_C[sym].get("5m",deque()))
+    c15=list(AI_C[sym].get("15m",deque()))
+    if len(c5)<12: return None
+    ch=chal_get()
+    if ch["balance"]<FLOOR_USD: return None
+    dop=ch.get("day_open",ch["balance"])
+    if dop>0 and (dop-ch["balance"])/dop>=DD_LIMIT: return None
+    sn,_,_,_=get_session()
+    if sn=="OFF": return None
+    reg=AI_REG
+    cd=AI_CD.get(sym)
+    if cd and datetime.now(timezone.utc)<cd: return None
+    with _ai_lk:
+        if any(t["symbol"]==sym and t["status"]=="open" for t in AI_OT.values()): return None
+    a=max(c5[-1]["close"]-c5[-1]["open"] for _ in [1]); price=c5[-1]["close"]
+
+    # ── Détection OB simple ───────────────────────────
+    n=len(c5); a_v=sum(abs(x["close"]-x["open"]) for x in c5[-14:])/14 if len(c5)>=14 else 0.01
+    sig=None; strat="OB"
+
+    for i in range(n-3,max(n-12,2),-1):
+        c0,c1,c2=c5[i-2],c5[i-1],c5[i]
+        b2=abs(c1["close"]-c1["open"]); r=c1["high"]-c1["low"]
+        if r==0: continue
+        bull_i=c2["close"]>c2["open"] and (c2["close"]-c2["open"])>b2*1.0
+        bear_i=c2["close"]<c2["open"] and (c2["open"]-c2["close"])>b2*1.0
+        if c1["close"]<c1["open"] and bull_i and bias!="BEAR" and c1["low"]<=price<=c1["high"]*1.004:
+            sl=c1["low"]*0.998; sld=price-sl
+            if 0<sld<=a_v*4:
+                sig={"side":"BUY","entry":price,"sl":sl,"tp1":price+sld*2.5,"tp2":price+sld*5,"sc":68}; break
+        if c1["close"]>c1["open"] and bear_i and bias!="BULL" and c1["low"]*0.996<=price<=c1["high"]:
+            sl=c1["high"]*1.002; sld=sl-price
+            if 0<sld<=a_v*4:
+                sig={"side":"SELL","entry":price,"sl":sl,"tp1":price-sld*2.5,"tp2":price-sld*5,"sc":68}; break
+
+    # ── Liq sweep simple ─────────────────────────────
+    if not sig:
+        rec=c5[n-15:n-3] if n>=15 else c5
+        sh=max(x["high"] for x in rec); sl2=min(x["low"] for x in rec)
+        if any(x["high"]>sh for x in c5[n-5:n-1]) and price<sh and bias!="BULL":
+            sl_v=max(x["high"] for x in c5[n-5:n])*1.002; sld=sl_v-price
+            if 0<sld<=a_v*4:
+                sig={"side":"SELL","entry":price,"sl":sl_v,"tp1":price-sld*3,"tp2":price-sld*6,"sc":72}; strat="LIQ"
+        if not sig and any(x["low"]<sl2 for x in c5[n-5:n-1]) and price>sl2 and bias!="BEAR":
+            sl_v=min(x["low"] for x in c5[n-5:n])*0.998; sld=price-sl_v
+            if 0<sld<=a_v*4:
+                sig={"side":"BUY","entry":price,"sl":sl_v,"tp1":price+sld*3,"tp2":price+sld*6,"sc":72}; strat="LIQ"
+
+    if not sig: return None
+
+    sld=abs(sig["entry"]-sig["sl"])
+    sc=sig["sc"]+sess_bonus(sn)
+
+    # Mémoire
+    w,l,_=mem_query("{}|{}|{}".format(strat,sn,reg.get("regime","?")))
+    t=w+l
+    if t>=3:
+        wr=w/t
+        if wr>0.85: sc+=8
+        elif wr<0.45: sc-=12
+
+    min_sc=reg.get("min_score",72)
+    if sc<min_sc: return None
+
+    risk=ai_risk(bal,sc,ch["am_cycle"],sn)
+    lev=ai_lev(sym,bal,sc)
+    lot=lot_calc(sym,risk,sld,sig["entry"],lev)
+    if not lot["qty"]: return None
+
+    return {"sym":sym,"side":sig["side"],"entry":sig["entry"],"sl":sig["sl"],
+            "tp1":sig["tp1"],"tp2":sig["tp2"],"sc":sc,"rr":round(abs(sig["tp1"]-sig["entry"])/sld,1),
+            "risk":risk,"lev":lev,"qty":lot["qty"],"not":lot["not"],
+            "ft":lot["ft"],"rr_real":lot["rr"],
+            "strat":strat,"sess":sn,"regime":reg.get("regime","?"),
+            "am":ch["am_cycle"]}
+
+def ai_full_scan():
+    bias=ai_btc_bias(); ch=chal_get(); bal=ch["balance"]
+    res=[]
+    for sym in AI_PRS[:20]:
+        s=ai_scan_sym(sym,bias,bal)
+        if s: res.append(s)
+    res.sort(key=lambda x:(-x["sc"],-x["rr"]))
+    return res
+
+def ai_open(setup):
+    global AI_TC
+    AI_TC+=1; tid=AI_TC; sym=setup["sym"]
+    trade={"id":tid,"symbol":sym,"side":setup["side"],
+           "entry":setup["entry"],"sl":setup["sl"],"sl0":setup["sl"],
+           "tp1":setup["tp1"],"tp2":setup["tp2"],
+           "risk":setup["risk"],"rr":setup["rr"],"lev":setup["lev"],
+           "qty":setup["qty"],"not":setup["not"],"ft":setup["ft"],
+           "strat":setup["strat"],"sc":setup["sc"],"am":setup["am"],
+           "sess":setup["sess"],"regime":setup["regime"],
+           "status":"open","be":False,"tp1_hit":False,
+           "open_ts":datetime.now(timezone.utc).isoformat()}
+    with _ai_lk:
+        AI_OT[tid]=trade
+        AI_CD[sym]=datetime.now(timezone.utc)+timedelta(minutes=COOLDOWN_MIN)
+    ch=chal_get(); bal=ch["balance"]
+    d="🟢 LONG" if setup["side"]=="BUY" else "🔴 SHORT"
+    prog=chal_prog(ch)
+    tg_send(ADMIN_ID,
+        "<b>━━━ TRADE IA #{} ━━━</b>\n{} <b>{}</b>\n"
+        "🎯 Score:{}/100  RR:1:{}\n"
+        "📍 {:.5f}  🛑 {:.5f}\n"
+        "✅ TP1:{:.5f}  🏆 TP2:{:.5f}\n"
+        "📦 Qty:{}  {}$  Lev:{}x\n"
+        "💸 Frais:{:.5f}$  Risk:{:.4f}$\n"
+        "🕐 {}  🌍 {}  📊 {}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "{}\n<b>@leaderOdg</b>".format(
+            tid,d,sym,setup["sc"],setup["rr"],
+            setup["entry"],setup["sl"],setup["tp1"],setup["tp2"],
+            setup["qty"],round(setup["not"],2),setup["lev"],
+            setup["ft"],setup["risk"],
+            setup["sess"],setup["regime"],setup["strat"],prog))
+    if setup["sc"]>=78:
+        for puid in pro_users(): tg_send(puid,"<b>📊 Signal IA #{} — {} {}</b>\n{} Score:{}/100 RR:1:{}\n📍 {:.5f} → TP:{:.5f} SL:{:.5f}\n<b>@leaderOdg</b>".format(tid,sym,d,setup["strat"],setup["sc"],setup["rr"],setup["entry"],setup["tp1"],setup["sl"])); time.sleep(0.04)
+    log("AI",clr("#{} {} {} Sc:{} Qty:{} Risk:{:.4f}$".format(tid,sym,"L" if setup["side"]=="BUY" else "S",setup["sc"],setup["qty"],setup["risk"]),"g"))
+    return tid
+
+def ai_check():
+    with _ai_lk: trades=list(AI_OT.values())
+    ch=chal_get()
+    for t in trades:
+        if t["status"]!="open": continue
+        price=bn_price(t["symbol"])
+        if price is None: continue
+        side=t["side"]; entry=t["entry"]; sl=t["sl"]; tp1=t["tp1"]; tp2=t["tp2"]
+        sld0=abs(entry-t["sl0"])
+        rrc=((price-entry)/sld0 if side=="BUY" else (entry-price)/sld0) if sld0>0 else 0
+        if rrc>=1.0 and not t["be"]:
+            be=entry*1.0002 if side=="BUY" else entry*0.9998
+            with _ai_lk: t["sl"]=be; t["be"]=True
+            tg_send(ADMIN_ID,"<b>🔒 BE #{} — {}</b>\nRR:{:.2f} SL→{:.5f}\n<b>@leaderOdg</b>".format(t["id"],t["symbol"],rrc,be))
+        hit_tp1=(price>=tp1 if side=="BUY" else price<=tp1)
+        if hit_tp1 and not t["tp1_hit"]:
+            p=round(t["risk"]*rrc-t["ft"],4)
+            with _ai_lk: t["tp1_hit"]=True; t["sl"]=tp1
+            tg_send(ADMIN_ID,"<b>✅ TP1 #{} — {}</b>\n+{:.4f}$ SL→TP2:{:.5f}\n<b>@leaderOdg</b>".format(t["id"],t["symbol"],p,tp2))
+        hit_sl=(price<=sl if side=="BUY" else price>=sl)
+        hit_tp2=(price>=tp2 if side=="BUY" else price<=tp2)
+        if hit_sl or hit_tp2:
+            gross=t["risk"]*(rrc if (hit_tp2 or t["tp1_hit"]) else -1)
+            net=round(gross-t["ft"],4)
+            result="WIN" if (hit_tp2 or (t["tp1_hit"] and hit_sl)) else ("BE" if t["be"] else "LOSS")
+            with _ai_lk: t.update({"status":"closed","exit":price,"pnl":net,"result":result,"close_ts":datetime.now(timezone.utc).isoformat()})
+            dur=""
+            try:
+                od=datetime.fromisoformat(t.get("open_ts",""))
+                dur="{}min".format(int((datetime.now(timezone.utc)-od).total_seconds()/60))
+            except: pass
+            am_old=ch["am_cycle"]
+            if result=="WIN": ch["w_streak"]=ch.get("w_streak",0)+1; ch["l_streak"]=0; ch["am_cycle"]=0 if ch["w_streak"]>=AM_MAX else min(ch["am_cycle"]+1,AM_MAX)
+            else: ch["l_streak"]=ch.get("l_streak",0)+1; ch["am_cycle"]=0; ch["w_streak"]=0
+            ch["balance"]=round(ch["balance"]+net,4); ch["today_pnl"]=round(ch.get("today_pnl",0)+net,4)
+            if net>0: ch["today_w"]=ch.get("today_w",0)+1
+            else: ch["today_l"]=ch.get("today_l",0)+1
+            ch["best_rr"]=max(ch.get("best_rr",0),float(t["rr"])); ch["peak"]=max(ch.get("peak",ch["balance"]),ch["balance"])
+            chal_save(ch)
+            mem_record("{}|{}|{}".format(t.get("strat","?"),t.get("sess","?"),t.get("regime","?")),result,net)
+            hdr={"WIN":"✅ GAGNANT","BE":"🔒 BE","LOSS":"❌ PERDANT"}[result]
+            tg_send(ADMIN_ID,"<b>━━━ {} #{} ━━━</b>\n{} <b>{}</b>\n📍{:.5f}→<b>{:.5f}</b>\n💵 {:+.4f}$  Frais:-{:.5f}$\n📐 RR:{:.2f}  ⏱{}\n🔄 AM:{}→{}\n{}\n<b>@leaderOdg</b>".format(
+                hdr,t["id"],"🟢" if side=="BUY" else "🔴",t["symbol"],
+                entry,price,net,t["ft"],rrc,dur,am_old,ch["am_cycle"],chal_prog(ch)))
+            if result=="WIN": tg_send(CHANNEL_ID,"<b>✅ WIN IA #{} — {}</b>\n+{:.4f}$ RR:{:.2f}\nSolde:{:.4f}$\n<b>@leaderOdg</b>".format(t["id"],t["symbol"],net,rrc,ch["balance"]))
+
+def chal_prog(c):
+    bal=c["balance"]; start=c["start_bal"]; target=start*100
+    prog=min(100,bal/target*100) if target>0 else 0
+    bar="█"*int(prog/5)+"░"*(20-int(prog/5))
+    return "[{}] {:.1f}%\n{:.4f}$ → {:.0f}$".format(bar,prog,bal,target)
+
+# ══════════════════════════════════════════════════════
+#  FORMATAGE SIGNAUX
+# ══════════════════════════════════════════════════════
+MODE_LABELS = {
+    "NORMAL":"ICT/SMC ✓","EMA_BOUNCE":"EMA Bounce 📊",
+    "MOMENTUM":"Momentum 🚀","STRUCTURE_PLAY":"Structure H1 🏗",
+    "RANGE_BREAK":"Cassure Range 📐","TREND_FOLLOW":"Trend Following 📈",
+    "OB":"Order Block","LIQ":"Liquidity Sweep",
+}
 
 def _score_label(sc):
     """Retourne une évaluation textuelle du score de confiance."""
@@ -3204,12 +2248,10 @@ def _trade_reason(sig):
     if "Breakout" in b: parts.append("breakout retest")
     if "H&S" in b or "IH&S" in b: parts.append("Head&Shoulders")
     if "Double" in b: parts.append("double top/bot")
-    if "HH Failed" in b or "LL Failed" in b: parts.append("HH/LL failed")
-    if "Fakeout ICT" in b: parts.append("fakeout ICT")
     if "Macro" in b:  parts.append("alignement macro")
     bt = sig.get("btype","")
-    if bt: parts.insert(0, "biais H4 ({})".format(bt))
-    return "  +  ".join(parts) if parts else "OB M15 + structure H4"
+    if bt: parts.insert(0, "biais H1 ({})".format(bt))
+    return "  +  ".join(parts) if parts else "OB M15 + structure H1"
 
 def _score_bar(sc):
     filled = round(sc / 10)
@@ -3248,7 +2290,7 @@ def fmt_pro(s, news, sl_label):
 
     # ── Bloc M5 (nouveau v11) ─────────────────────────────────────
     m5_conf  = s.get("m5_conf", {})
-    tf_tag   = s.get("tf_tag", "M15+H4")
+    tf_tag   = s.get("tf_tag", "M15+H1")
     m5_ok    = m5_conf.get("ok", False)
     m5_det   = m5_conf.get("details", "—")
     if m5_ok:
@@ -3268,8 +2310,7 @@ def fmt_pro(s, news, sl_label):
         "",
         "┌─ <b>NIVEAUX</b> ──────────────────────────",
         "│  Entree : <code>{}</code>".format(s["entry"]),
-        "│  TP1    : <code>{}</code>  (RR 1:{})".format(s["tp"], s["rr"]),
-        "│  TP2    : <code>{}</code>  🎯 extension".format(s.get("tp2", "—")),
+        "│  TP     : <code>{}</code>".format(s["tp"]),
         "│  SL     : <code>{}</code>".format(s["sl"]),
         "│  RR     : <b>1:{}</b>".format(s["rr"]),
         "└──────────────────────────────────",
@@ -3366,8 +2407,11 @@ def fmt_scan(results, news, scan_t, sl_l, sm, nb):
     - Tableau par catégorie avec score + M5 status
     - Indicateur qualité (ELITE / PREMIUM / SOLIDE / -)
     - Résumé des rejets par cause (pour debug rapide)
+    - Challenge IA inline
     """
     st  = daily_stats()
+    ch  = chal_get()
+    reg = AI_REG
     sn, _, sess_label, wknd = get_session()
     news_ico = "✅" if "✅" in news else "⚠️"
 
@@ -3407,10 +2451,18 @@ def fmt_scan(results, news, scan_t, sl_l, sm, nb):
     lines = [
         "🔍 <b>SCAN {} UTC</b>  ·  {}".format(scan_t, sess_label),
         sep,
+        # Ligne 1 : session + score min + news
         "📡 Session : <b>{}</b>  ·  Score min : <b>{}</b>  ·  News : {}".format(
             sl_l, sm, news_ico),
-        "📊 Aujourd'hui : <b>{}✅  {}❌  {}🔄</b>  ({} signaux)  💵 +${}".format(
-            st["wins"], st["losses"], st.get("open", 0), st["n"], st["g1"]),
+        # Ligne 2 : challenge IA + régime
+        "🤖 IA : <b>{:.4f}$</b>  ·  Régime : <b>{}</b>".format(
+            ch["balance"], reg.get("regime", "?")),
+        # Ligne 3 : stats du jour
+        # Rapport basé sur les vrais trades uniquement (pas les estimés)
+        "📊 Vrais trades : <b>{}✅  {}❌  {}🔄</b>  WR:<b>{}%</b>  PnL réel: +${}".format(
+            st["wins"], st["losses"], st.get("open", 0),
+            int(st["wins"]/st["n"]*100) if st.get("n",0) > 0 else 0,
+            st["g1"]),
         "",
     ]
 
@@ -3450,7 +2502,7 @@ def fmt_scan(results, news, scan_t, sl_l, sm, nb):
                 )
                 lines.append(
                     "│    📊 {} │ M5 {} {}".format(
-                        s.get("tf_tag", "M15+H4"), m5_ico, m5.get("details", "")
+                        s.get("tf_tag", "M15+H1"), m5_ico, m5.get("details", "")
                     )
                 )
                 lines.append("│")
@@ -3540,7 +2592,7 @@ def fmt_daily(st, is_pro=True):
         ]
         total_001 = 0.0
         for row in st["rows"]:
-            pair, side, rr, g001, g1, l001, l1, sess, mode, result = _safe_row(row, 10)
+            pair, side, rr, g001, g1, l001, l1, sess, mode, result = row
             d = "⬆️" if side == "BUY" else "⬇️"
             if result == "TP":
                 icon = "✅"; detail = f"<b>+${g001:.2f}</b> (lot 0.01)  /  <b>+${g1:.0f}</b> (lot 1)"
@@ -3703,12 +2755,7 @@ def _scan_inner():
     sigs = [(r["signal"], "{}-{}-{}-{}".format(r["signal"]["name"], r["signal"]["side"], ds, hs))
             for r in results if r["found"]]
     with _sent_lk: sigs = [(s, k) for s, k in sigs if k not in _sent]
-    # Tri : Tier 1 (Gold/BTC) toujours en tête, puis par score
-    def sig_priority(item):
-        s, k = item
-        tier_bonus = 1000 if s["name"] in TIER1_MARKETS else (500 if s["name"] in TIER2_MARKETS else 0)
-        return -(tier_bonus + s["score"])
-    sigs.sort(key=sig_priority)
+    sigs.sort(key=lambda x: -x[0]["score"])
 
 
 
@@ -3729,13 +2776,13 @@ def _scan_inner():
         # ── Blocage signaux après 22h00 UTC ─────────────────────────
         now_check = datetime.now(timezone.utc).replace(tzinfo=None)
         if now_check.hour >= SIGNAL_CUTOFF_HOUR:
-            log("INFO", clr("Signal {} bloqué — après 22h00 UTC".format(sig["name"]), "y"))
+            log("INFO", clr("Signal {} bloqué — après 22h00 UTC".format(sig["name"]), "yellow"))
             continue
 
         # ── Throttle global : max 3/h, max 6/j, gap 15min ──────────
         ok_send, reason_throttle = _throttle_allowed(now_check)
         if not ok_send:
-            log("INFO", clr("Signal {} ignoré — {}".format(sig["name"], reason_throttle), "y"))
+            log("INFO", clr("Signal {} ignoré — {}".format(sig["name"], reason_throttle), "yellow"))
             continue
 
         sc  = sig.get("score", 0)
@@ -3744,44 +2791,30 @@ def _scan_inner():
         msg_p       = fmt_pro(sig, news_lbl, sl_l)
         msg_teasing = fmt_signal_teasing(sig)
 
-        # ── Images du signal ─────────────────────────────────────────
-        chart_img_pro  = None   # chart complet → VIP
-        chart_img_free = None   # chart flouté  → FREE
+        # ── Image du signal ──────────────────────────────────────────
+        chart_img = None
         try:
             m_obj = next((x for x in MARKETS if x["name"]==sig["name"]), None)
             m15_c = fetch_c(m_obj["sym"], "15m", "3d") if m_obj else None
-            chart_img_pro  = generate_signal_chart(sig, m15_c)
-            chart_img_free = generate_teasing_chart(sig, m15_c)
+            chart_img = generate_signal_chart(sig, m15_c)
         except: pass
 
-        # ── Boutons invitation PRO ────────────────────────────────────
+        # ── Groupe FREE → teasing uniquement (aucun niveau) ─────────
         ref_admin = "https://t.me/{}?start={}".format(BOT_USER, ADMIN_ID)
-        kb_pro_invite = {"inline_keyboard": [
-            [{"text": "💵 Payer 10$/mois — Accès immédiat", "url": ref_admin}],
-            [{"text": "🤝 Parrainer 10 amis → 7j PRO offerts", "url": ref_admin}],
-            [{"text": "📢 Partager le groupe",  "url": FREE_GROUP_LINK},
-             {"text": "👑 Rejoindre VIP",       "url": VIP_GROUP_LINK}],
-        ]}
-
-        # ── Groupe FREE → image floutée + message teasing + boutons ──
-        if chart_img_free:
-            r = tg_send_photo(CHANNEL_ID, chart_img_free, caption=msg_teasing[:1024])
-            # Envoyer les boutons en message séparé si photo envoyée
-            if r.get("ok"):
-                unlock_msg = (
-                    "\U0001f446 <b>Niveaux masqu\u00e9s \u2014 r\u00e9serv\u00e9s aux membres PRO</b>\n\n"
-                    "\U0001f513 D\u00e9bloque l'acc\u00e8s pour recevoir :\n"
-                    "  \U0001f3af Entr\u00e9e \u00b7 TP \u00b7 SL exacts\n"
-                    "  \U0001f4ca Score ICT complet\n"
-                    "  \u26a1 Jusqu'\u00e0 10 signaux/jour"
-                )
-                tg_send(CHANNEL_ID, unlock_msg, kb=kb_pro_invite)
+        if chart_img:
+            r = tg_send_photo(CHANNEL_ID, chart_img, caption=msg_teasing[:1024])
         else:
-            r = tg_send(CHANNEL_ID, msg_teasing, kb=kb_pro_invite)
+            r = tg_send(CHANNEL_ID, msg_teasing,
+                        kb={"inline_keyboard": [
+                            [{"text": "💵 Payer 10$/mois",      "url": ref_admin}],
+                            [{"text": "🤝 Parrainer 10 amis",   "url": ref_admin}],
+                            [{"text": "📢 Partager ce groupe",   "url": FREE_GROUP_LINK},
+                             {"text": "👑 Groupe VIP",           "url": VIP_GROUP_LINK}],
+                        ]})
 
-        # ── Groupe VIP → chart PRO complet + signal détaillé ─────────
-        if chart_img_pro:
-            tg_send_photo(VIP_CH, chart_img_pro, caption=msg_p[:1024])
+        # ── Groupe VIP → 1 seul message : signal PRO complet ────────
+        if chart_img:
+            tg_send_photo(VIP_CH, chart_img, caption=msg_p[:1024])
         else:
             tg_send(VIP_CH, msg_p)
 
@@ -3795,10 +2828,6 @@ def _scan_inner():
         # ── DM individuels : 1 message par utilisateur ───────────────
         for uid in all_users():
             try:
-                # PDG/Admin → toujours signal PRO complet, jamais limité
-                if uid == ADMIN_ID:
-                    tg_send(uid, msg_p)
-                    continue
                 pro = is_pro(uid)
                 c   = count_today(uid)
                 if pro:
@@ -3821,7 +2850,7 @@ def _scan_inner():
                 "Marchés actifs mais conditions insuffisantes (score < 85 ou liquidité absente).\n"
                 "Prochaine analyse dans {}s.".format(scan_t, SCAN_SEC))
     # ── Rapport soir 22h UTC — UNE SEULE FOIS ───────────────────────
-    if int(hs) == DAILY_HOUR and _last_d != ds and not rep_sent(ds, "daily_reports", "report_date"):
+    if int(hs) == DAILY_HOUR and _last_d != ds and not rep_sent(ds):
         st = daily_stats(ds)
         if st["n"] > 0:
             d_pro  = fmt_daily(st, is_pro=True)
@@ -3873,13 +2902,18 @@ def _scan_inner():
     if int(hs)%6==0 and ds+hs!=getattr(_scan_inner,"_lr",""):
         _scan_inner._lr=ds+hs; threading.Thread(target=relance_inactifs,daemon=True).start()
     threading.Thread(target=check_open_sigs,daemon=True).start()
+    threading.Thread(target=ai_scan_cycle,daemon=True).start()
+    # Vérifier fin de session → rapport automatique
+    # Session end reports désactivés — rapport soir uniquement
 
-    # ── Message motivation + image → groupe gratuit (07h 10h 13h 16h 19h UTC) ──
-    _MOTIV_HOURS = {7, 10, 13, 16, 19}
-    _motiv_key = ds + hs
-    if int(hs) in _MOTIV_HOURS and _motiv_key != getattr(_scan_inner, "_last_motiv", ""):
-        _scan_inner._last_motiv = _motiv_key
-        threading.Thread(target=send_auto_motivation, daemon=True).start()
+def ai_scan_cycle():
+    try:
+        setups=ai_full_scan()
+        if setups:
+            best=setups[0]
+            log("AI",clr("Setup {} {} Sc:{} RR:{}".format(best["sym"],"L" if best["side"]=="BUY" else "S",best["sc"],best["rr"]),"g"))
+            ai_open(best)
+    except Exception as e: log("WARN","[AI] {}".format(e))
 
 def broadcast_new_version():
     """Envoie un message de mise à jour à TOUS les utilisateurs avec leur lien de parrainage."""
@@ -3900,7 +2934,7 @@ def broadcast_new_version():
                 "   Les entrées H1 nécessitent trop de marge\n"
                 "   et exposent à des pertes importantes.\n\n"
                 "🔍 <b>Chaque signal inclut désormais :</b>\n"
-                "  • Biais H4 (tendance fond)\n"
+                "  • Biais H1 (tendance fond)\n"
                 "  • Confirmation liquidité (sweep / EQH-EQL)\n"
                 "  • Entrée précise M5 ou M15\n"
                 "  • Order Block + FVG validés\n\n"
@@ -3922,177 +2956,6 @@ def broadcast_new_version():
             log("WARN", "broadcast_v17 uid={}: {}".format(fuid, e))
     log("INFO", clr("Broadcast v17 → {} membres ({} ok, {} fail)".format(count, ok, fail), "b", "g"))
     tg_send(ADMIN_ID, "📢 <b>Broadcast v17 OK</b>\n✅ {} envoyés  ·  ❌ {} échecs".format(ok, fail))
-
-# ══════════════════════════════════════════════════════════════════
-#  MOTIVATION AUTOMATIQUE — Groupe gratuit avec image illustration
-#  Envoyé à 07h, 10h, 13h, 16h, 19h UTC (sessions actives)
-#  Images Unsplash trading + message ICT/SMC brandé @leaderOdg
-# ══════════════════════════════════════════════════════════════════
-
-_TRADING_IMAGES_URLS = [
-    "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?w=800",
-    "https://images.unsplash.com/photo-1640340434855-6084b1f4901c?w=800",
-    "https://images.unsplash.com/photo-1590283603385-17ffb3a7f29f?w=800",
-    "https://images.unsplash.com/photo-1535320903710-d993d3d77d29?w=800",
-    "https://images.unsplash.com/photo-1460925895917-afdab827c52f?w=800",
-    "https://images.unsplash.com/photo-1559526324-4b87b5e36e44?w=800",
-    "https://images.unsplash.com/photo-1579621970563-ebec7560ff3e?w=800",
-    "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?w=800",
-    "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?w=800",
-]
-
-_AUTO_MOTIVATIONS = [
-    (
-        "💪 <b>Le marché offre des opportunités CHAQUE JOUR.</b>\n\n"
-        "Le trader qui se prépare gagne.\n"
-        "Celui qui attend le moment parfait rate tout.\n\n"
-        "📊 Mes signaux ICT/SMC scannent 20 marchés en temps réel.\n"
-        "London Kill Zone et NY Kill Zone = les meilleures sessions.\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🎯 <b>Restez disciplinés. Les profits suivent.</b>\n\n"
-        "❓ Questions ou dépôt : @leaderOdg\n"
-        "💰 Ouvrir compte Exness ↓"
-    ),
-    (
-        "🎯 <b>Discipline + Patience = Profit.</b>\n\n"
-        "Ne chassez pas le marché.\n"
-        "Laissez le marché venir à vous.\n\n"
-        "📐 <b>Ma méthode ICT/SMC :</b>\n"
-        "✅ Tendance de fond sur H4\n"
-        "✅ Entrée sur M15 après sweep de liquidité\n"
-        "✅ RR minimum 2:1 sur chaque signal\n"
-        "✅ Validation IA avant envoi\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "📲 <b>Partage ce groupe à tes amis traders !</b>\n\n"
-        "❓ Aide débutant ou compte Exness : @leaderOdg"
-    ),
-    (
-        "🔥 <b>Les grands traders ne gagnent pas PLUS,\n"
-        "ils perdent MOINS.</b>\n\n"
-        "Toujours respecter son SL.\n"
-        "Le capital est sacré.\n\n"
-        "⚡ <b>London + NY Kill Zone = les sessions OR.</b>\n"
-        "C'est là que les institutions bougent.\n"
-        "C'est là que mes signaux sont les plus précis.\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "💎 <b>Signaux 100% gratuits dans ce groupe.</b>\n"
-        "Version PRO disponible : 10$ USDT/mois\n\n"
-        "❓ Contacte-moi : @leaderOdg"
-    ),
-    (
-        "💎 <b>Chaque signal est une opportunité calculée.</b>\n\n"
-        "RR 2:1 minimum. Votre capital est sacré.\n\n"
-        "📊 <b>Ce que vous recevez gratuitement ici :</b>\n"
-        "✅ Signaux H4/M15 ICT/SMC en temps réel\n"
-        "✅ Or · BTC · Forex · Indices · Pétrole\n"
-        "✅ Analyse fondamentale live 24h/24\n"
-        "✅ Suivi TP/SL automatique\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🚀 <b>Prêt à trader avec un vrai compte ?</b>\n"
-        "Dépôt minimum 10$ sur Exness ↓\n"
-        "Je t'accompagne personnellement : @leaderOdg"
-    ),
-    (
-        "🧠 <b>ICT/SMC : les institutions laissent des traces.</b>\n\n"
-        "Breaker Blocks · CHoCH · FVG · Sweep\n"
-        "Apprenez à les lire — les profits suivent.\n\n"
-        "📈 <b>Ma stratégie en 3 étapes :</b>\n"
-        "1️⃣ Identifier le biais H4 (direction du fond)\n"
-        "2️⃣ Attendre la prise de liquidité M15\n"
-        "3️⃣ Entrer sur la bougie de confirmation\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "📲 <b>Partage ce groupe à tes amis traders !</b>\n"
-        "Plus on est nombreux, plus on progresse ensemble 💪\n\n"
-        "❓ Formation ou dépôt : @leaderOdg"
-    ),
-    (
-        "🚀 <b>Consistency beats luck.</b>\n\n"
-        "Suivez le plan.\n"
-        "Respectez les niveaux.\n"
-        "Les profits suivront.\n\n"
-        "⏰ <b>Sessions à surveiller aujourd'hui :</b>\n"
-        "🇬🇧 London Kill Zone  : 07h-10h UTC\n"
-        "⚡ Pre-NY Overlap    : 12h-13h UTC\n"
-        "🇺🇸 New York KZ      : 13h-16h UTC\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🎯 <b>Mes signaux arrivent automatiquement.</b>\n"
-        "Soyez prêts quand ça arrive.\n\n"
-        "❓ Questions : @leaderOdg  ·  💰 Exness ↓"
-    ),
-    (
-        "⚡ <b>Le trading n'est pas un jeu de hasard.</b>\n\n"
-        "C'est une science que j'applique chaque jour\n"
-        "avec la méthode ICT/SMC.\n\n"
-        "🥇 <b>Mes marchés prioritaires :</b>\n"
-        "🥇 XAU/USD (Or) — volatilité + spreads bas\n"
-        "₿  BTC/USD — 7j/7 week-ends inclus\n"
-        "💱 EUR/USD · GBP/USD · USD/JPY\n"
-        "📈 NAS100 · SPX500 · US30\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "💵 <b>Prêt à déposer 10$ et commencer ?</b>\n"
-        "Utilise mon lien Exness ↓\n"
-        "Je t'aide à tout configurer : @leaderOdg"
-    ),
-]
-
-_motiv_idx = [0]
-
-def send_auto_motivation():
-    """
-    Envoie un message de motivation avec image illustration
-    vers le groupe gratuit. Rotation séquentielle des messages.
-    Heures : 07h, 10h, 13h, 16h, 19h UTC.
-    """
-    try:
-        sn, sm, sl_l, wknd = get_session()
-
-        # Choisir le message (rotation séquentielle)
-        idx = _motiv_idx[0] % len(_AUTO_MOTIVATIONS)
-        _motiv_idx[0] += 1
-        msg_text = _AUTO_MOTIVATIONS[idx]
-
-        # Choisir une image aléatoire
-        img_url = random.choice(_TRADING_IMAGES_URLS)
-
-        # Boutons
-        ref_admin = "https://t.me/{}?start={}".format(BOT_USER, ADMIN_ID)
-        kb = {"inline_keyboard": [
-            [{"text": "💰 Ouvrir compte Exness", "url": BROKER_LINK}],
-            [{"text": "✉️ Contacter @leaderOdg", "url": "https://t.me/leaderOdg"},
-             {"text": "👑 Groupe VIP",            "url": VIP_GROUP_LINK}],
-            [{"text": "📢 Partager ce groupe",    "url": FREE_GROUP_LINK},
-             {"text": "💠 Devenir PRO",            "url": ref_admin}],
-        ]}
-
-        # Télécharger l'image et envoyer avec caption
-        try:
-            import urllib.request as _ur
-            ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
-            req = _ur.Request(img_url, headers={"User-Agent": "Mozilla/5.0"})
-            with _ur.urlopen(req, context=ctx, timeout=10) as resp:
-                img_bytes = resp.read()
-            # Caption limitée à 1024 chars pour Telegram sendPhoto
-            caption = msg_text[:1020]
-            r = tg_send_photo(CHANNEL_ID, img_bytes, caption=caption)
-            if r.get("ok"):
-                # Envoyer les boutons en message séparé après la photo
-                tg_send(CHANNEL_ID,
-                    "📲 <b>Partage à tes amis traders !</b>\n"
-                    "Plus on est nombreux, plus on progresse ensemble 💪\n\n"
-                    "❓ Aide ou dépôt : @leaderOdg",
-                    kb=kb)
-                log("INFO", clr("Motivation auto → groupe gratuit ✅ (img + msg)", "g"))
-                return
-        except Exception as img_err:
-            log("WARN", "Motivation image téléchargement: {}".format(img_err))
-
-        # Fallback : message texte seul si image échoue
-        tg_send(CHANNEL_ID, msg_text, kb=kb)
-        log("INFO", clr("Motivation auto → groupe gratuit ✅ (texte seul)", "g"))
-
-    except Exception as e:
-        log("WARN", "send_auto_motivation: {}".format(e))
-
 
 def do_backup():
     try:
@@ -4187,7 +3050,7 @@ def verify_tx(tx):
 
 def handle_pay_submitted(uid, uname, plan_key="PRO"):
     _pay_state[uid]={"tx":None,"step":"waiting","plan":plan_key}
-    price = {"FREE":0,"STARTER":5,"PRO":PRO_PRICE,"VIP":VIP_PRICE}.get(plan_key, PRO_PRICE)
+    price = {"FREE":0,"STARTER":5,"PRO":10,"VIP":25}.get(plan_key, PRO_PRICE)
     tg_send(uid,
         "📋 <b>COLLE TON TX HASH</b>\n\n"
         "Plan: <b>{}</b> — {}$ USDT TRC20\n\n"
@@ -4214,18 +3077,9 @@ def handle_pay_confirm(uid,uname):
             time.sleep(delay); ok,amt=verify_tx(tx)
             if ok:
                 db_pro(uid,"USDT_AUTO",days=None); tg_sticker(uid,STK_WIN)
+                tg_send(uid,"🎉 <b>PAIEMENT CONFIRMÉ!</b>\n\n✅ {}$ USDT reçu!\n💎 <b>PRO À VIE!</b>\n✅ Max {} signaux/j\n✅ Agent IA Binance inclus!".format(amt,PRO_LIMIT))
                 tg_send(ADMIN_ID,"🟢 AUTO PRO: @{} <code>{}</code> {}$ ✅".format(uname or "?",uid,amt))
-                log("PAY",clr("AUTO PRO: @{} {}$".format(uname,amt),"g"))
-                # ── Accès groupe VIP selon le montant payé ───────────
-                if amt >= VIP_PRICE:
-                    _send_vip_link_auto(uid, "Paiement {}$ USDT".format(round(amt, 2)))
-                else:
-                    tg_send(ADMIN_ID,
-                        "⚠️ <b>AJOUT VIP MANUEL REQUIS</b>\n"
-                        "@{} <code>{}</code>  a payé <b>{}$</b>\n\n"
-                        "👉 Ajoute-le manuellement au groupe VIP.".format(
-                            uname or "?", uid, round(amt, 2)))
-                return
+                log("PAY",clr("AUTO PRO: @{} {}$".format(uname,amt),"g")); return
             if i<2: log("INFO",clr("TX non confirmé {}/3".format(i+1),"y"))
         tg_send(uid,"⏳ <b>En attente</b>\n\nL'admin activera sous 30 min.\n@leaderOdg"); tg_send(ADMIN_ID,"⚠️ MANUELLE\n@{} <code>{}</code>\n<code>{}</code>\n/activate {}".format(uname or "?",uid,tx,uid))
     threading.Thread(target=_v,daemon=True).start()
@@ -4273,18 +3127,17 @@ def _group_invite_msg(pro=False):
 
 def send_welcome(uid, uname):
     db_register(uid, uname, tg_fn=tg_send)
+    p = is_pro(uid); ch = chal_get()
     plan = get_plan(uid)
     tg_sticker(uid, STK_W)
-    p = is_pro(uid)
-    sn, sm, sl_l, wknd = get_session()
     tg_send(uid,
-        "🤖 <b>AlphaBot PRO v21 — Signaux ICT/SMC</b>\n"+"═"*22+"\n\n"
+        "🤖 <b>AlphaBot PRO v17 — Agent IA Adaptatif</b>\n"+"═"*22+"\n\n"
         "📡 20 marchés : Forex · Or · BTC · Indices · Pétrole\n"
-        "🧠 ICT/SMC · Tendance H4 · Entrée M5/M15\n"
-        "🕐 Session : <b>{}</b>\n\n"
+        "🧠 ICT/SMC · Tendance H1 · Entrée M5/M15\n"
+        "🌍 Régime: <b>{}</b>  ·  Challenge: <b>{:.4f}$</b>\n\n"
         "✅ Plan: <b>{}</b>\n\nSélectionne une option ↓".format(
-            sl_l, "PRO" if p else "FREE"),
-        kb=kb_reply())
+            AI_REG.get("regime","?"), ch["balance"], plan),
+        kb=kb_main(p))
     # Invitation groupe après le welcome (délai 2s)
     time.sleep(2)
     inv_msg, inv_kb = _group_invite_msg(p)
@@ -4317,18 +3170,25 @@ def send_account(uid,uname,forced=None):
         ), kb=kb_main(plan in ("PRO","VIP")))
 
 def send_pay(uid):
-    tg_send(uid,
-        "💎 <b>PASSER EN PRO</b>\n"+"═"*22+"\n\n"
-        "✅ {} signaux/jour\n✅ 20 marchés + crypto week-end\n"
-        "✅ Rapports quotidiens + hebdo\n\n"
-        "💵 <b>PRIX: {}$ USDT TRC20</b>\n\n"
-        "📤 Envoie sur:\n<code>{}</code>\n\n"
-        "Puis clique <b>J'ai payé ✅</b>".format(PRO_LIMIT, PRO_PRICE, USDT_ADDR),
-        kb={"inline_keyboard":[
-            [{"text":"✅ J'ai payé","callback_data":"pay_submitted"}],
-            [{"text":"❓ Aide @leaderOdg","url":"https://t.me/leaderOdg"}],
-            [{"text":"◀️ Retour","callback_data":"start"}]
-        ]})
+    tg_send(uid,"💎 <b>PASSER EN PRO</b>\n"+"═"*22+"\n\n✅ {} signaux/jour\n✅ 20 marchés + crypto\n✅ \n✅ Agent IA Binance\n✅ Challenge 5$→500$\n\n💵 <b>PRIX: {}$ USDT TRC20</b>\n\n📤 Envoie sur:\n<code>{}</code>\n\nPuis clique <b>J'ai payé ✅</b>".format(PRO_LIMIT,PRO_PRICE,USDT_ADDR),
+        kb={"inline_keyboard":[[{"text":"✅ J'ai payé","callback_data":"pay_submitted"}],[{"text":"❓ Aide @leaderOdg","url":"https://t.me/leaderOdg"}],[{"text":"◀️ Retour","callback_data":"start"}]]})
+
+def send_challenge(uid):
+    ch=chal_get(); reg=AI_REG
+    w=ch.get("today_w",0); l=ch.get("today_l",0); tot=w+l
+    wr=round(w/tot*100) if tot>0 else 0
+    open_t=sum(1 for t in AI_OT.values() if t["status"]=="open")
+    tg_send(uid,"🏆 <b>CHALLENGE IA — Agent Alpha v10</b>\n"+"═"*22+"\n\n"
+        "{}\n\n"
+        "📊 Aujourd'hui: W:{} L:{} WR:{}%\n"
+        "📈 PnL jour: {:+.4f}$\n"
+        "🔄 AM Cycle: {}/4\n"
+        "📂 Positions: {}/{}\n\n"
+        "🌍 Régime: <b>{}</b> — {}\n"
+        "⚡ : actif\n\n"
+        "⚠️ Simulation — aucun ordre réel".format(
+            chal_prog(ch),w,l,wr,ch.get("today_pnl",0),ch["am_cycle"],open_t,MAX_OPEN,
+            reg.get("regime","?"),reg.get("label","?")),kb=kb_back())
 
 def send_rapports(uid):
     st=daily_stats(); ws=weekly_stats()
@@ -4336,11 +3196,10 @@ def send_rapports(uid):
     sw=ws["n"]; ww=ws["wins"]; wr_w=int(ww/sw*100) if sw else 0
     lines=["📈 <b>RAPPORTS DE PERFORMANCE</b>","═"*22,"","🔥 <b>AUJOURD'HUI</b>",""]
     if sd>0:
-        lines+=[
-            "📡 {} signaux  ·  {} ✅  ·  {}% réussite".format(sd,wd_,wr_d),
-            "💵 Lot 0.01: <b>+${}</b>".format(st["g001"]),
-            "💰 Lot 1.00: <b>+${}</b>".format(st["g1"]),
-            ""]
+        lines+=["📡 {} signaux  ·  {} ✅  ·  {}% réussite".format(sd,wd_,wr_d),
+                "💵 Lot 0.01: <b>+${}</b>".format(st["g001"]),
+                "💰 Lot 1.00: <b>+${}</b>".format(st["g1"]),
+                "" if improv_cnt else "",""]
     else: lines.append("⏳ Aucun signal aujourd'hui")
     lines+=["","━"*20,"","🔥🔥 <b>CETTE SEMAINE</b>",""]
     if sw>0: lines+=["📡 {} signaux  ·  {} ✅  ·  {}% réussite".format(sw,ww,wr_w),"💵 +${}  ·  💰 +${}".format(ws["g001"],ws["g1"])]
@@ -4351,20 +3210,23 @@ def send_rapports(uid):
 def send_admin_full(uid):
     if uid!=ADMIN_ID: tg_send(uid,"❌ Accès refusé."); return
     total,pro,sigs,pays,g1d=global_stats(); sn,sm,sl_l,_=get_session(); sm=get_adaptive_score_min()
-    st=daily_stats(); pend=pending_pays()
+    st=daily_stats(); pend=pending_pays(); ch=chal_get(); reg=AI_REG
     tg_sticker(uid,STK_PRO)
-    tg_send(uid,
-        "🛡 <b>ADMIN — AlphaBot PRO v21</b>\n"+"═"*22+"\n\n"
+    tg_send(uid,"🛡 <b>ADMIN — AlphaBot v10</b>\n"+"═"*22+"\n\n"
         "👥 Membres: <b>{}</b>  ·  PRO: <b>{}</b>  ·  FREE: <b>{}</b>\n"
         "📡 Signaux: <b>{}</b>  ·  Gains: <b>+${}</b>  ·  Payés: <b>{}</b>\n"
         "⏳ En attente: <b>{}</b>{}\n\n"
+        "🤖 <b>IA:</b> {:.4f}$ AM:{}/4 W:{} L:{}\n"
+        "🌍 Régime: <b>{}</b>  Positions: {}/{}\n\n"
         "🕐 Session: {}  Score min: {}\n\n"
         "/activate /degrade /scan /debug /stats /membres".format(
             total,pro,total-pro,st["n"],st["g1"],pays,len(pend),
             "  ⚠️ À valider!" if pend else "",
-            sl_l, sm),
+            ch["balance"],ch["am_cycle"],ch.get("today_w",0),ch.get("today_l",0),
+            reg.get("regime","?"),sum(1 for t in AI_OT.values() if t["status"]=="open"),MAX_OPEN,sl_l,sm),
         kb={"inline_keyboard":[
             [{"text":"💰 Paiements","callback_data":"adm_pays"},{"text":"📡 Scan forcé","callback_data":"adm_scan"}],
+            [{"text":"🏆 Challenge IA","callback_data":"challenge"},{"text":"📈 Rapports","callback_data":"rapports"}],
             [{"text":"🌍 État marchés","callback_data":"adm_markets"}],
         ]})
 
@@ -4399,6 +3261,7 @@ def send_guide(uid):
         "  • Régime marché auto (6 types)\n"
         "  • Adaptation du risque en temps réel\n"
         "  • Mémoire des setups gagnants\n"
+        "  • Challenge 5$→500$ géré automatiquement\n\n"
         "━"*20+"\n"
         "📊 FREE : {}/j  ·  💎 PRO : jusqu\'à {}/j\n\n"
         "🔥 <b>Pourquoi AlphaBot est différent ?</b>\n"
@@ -4466,21 +3329,10 @@ def _auto_verify_and_activate(uid, uname, tx_hash):
             tg_send(ADMIN_ID,
                 "\U0001f7e2 <b>AUTO PRO OK</b> : @{} <code>{}</code>  {}$ \u2705".format(
                     uname or "?", uid, amount))
-            # ── Accès groupe VIP selon le montant payé ────────────────
-            if amount >= VIP_PRICE:
-                # 20$ USDT → lien VIP envoyé automatiquement
-                _send_vip_link_auto(uid, "Paiement {}$ USDT".format(round(amount, 2)))
-            else:
-                # 10$ via lien de parrainage → admin ajoute manuellement
-                tg_send(ADMIN_ID,
-                    "⚠️ <b>AJOUT VIP MANUEL REQUIS</b>\n"
-                    "@{} <code>{}</code>  a payé <b>{}$</b>\n\n"
-                    "👉 Ajoute-le manuellement au groupe VIP.".format(
-                        uname or "?", uid, round(amount, 2)))
             log("PAY", clr("AUTO PRO: @{} {} — {}$".format(uname, uid, amount), "green"))
             return
         elif i < len(delays) - 1:
-            log("INFO", clr("TX non confirmé (tentative {}/3)".format(i + 1), "y"))
+            log("INFO", clr("TX non confirmé (tentative {}/3)".format(i + 1), "yellow"))
     # Toutes tentatives échouées → activation manuelle
     tg_send(uid,
         "\u23f3 <b>Vérification en cours côté admin</b>\n\n"
@@ -4553,7 +3405,7 @@ def _check_open_signals():
                         _notify_result(pair, side, entry, tp, sl, "SL", current)
             except: continue
     except Exception as e:
-        log("WARN", clr("Suivi signal échoué: {}".format(e), "y"))
+        log("WARN", clr("Suivi signal échoué: {}".format(e), "yellow"))
 
 
 def _do_backup():
@@ -4572,7 +3424,7 @@ def _do_backup():
                 datetime.now().strftime("%d/%m/%Y %H:%M")))
         log("INFO", clr("Backup DB envoyé à l'admin.", "green"))
     except Exception as e:
-        log("WARN", clr("Backup échoué: {}".format(e), "y"))
+        log("WARN", clr("Backup échoué: {}".format(e), "yellow"))
 
 
 def _fmt_daily_report(stats):
@@ -4843,7 +3695,7 @@ def _relance_inactifs():
             except: pass
         log("INFO", clr("Relance envoyée à {} inactifs.".format(len(inactifs[:20])), "dim"))
     except Exception as e:
-        log("WARN", clr("Relance échouée: {}".format(e), "y"))
+        log("WARN", clr("Relance échouée: {}".format(e), "yellow"))
 
 
 def _scan_and_send_inner():
@@ -4856,15 +3708,33 @@ def _scan_and_send_inner():
     wday      = now_dt.weekday()
 
     sn, sm, sl, wknd = get_session()
-    # Score minimum adaptatif (session + régime marché)
-    sm = get_adaptive_score_min()
-    log("INFO", clr("Scan {} — {} — Score min:{}  [{} marchés]".format(
-        scan_time, sl, sm, len(MARKETS)), "dim"))
+    sq = get_session_quality()
+
+    # ── Kill Zone Check — bloquer le scan si KZ active ──────────────────
+    if not sq["allowed"] and not wknd:
+        log("INFO", clr("⛔ Kill Zone active : {} — scan suspendu".format(sl), "yellow"))
+        return  # Pas de signal pendant les Kill Zones
+
+    # Score minimum adaptatif (session + régime marché + qualité setup)
+    sm = get_adaptive_score_min()  # Phase AMD et SMC count ajustés par agent
+    log("INFO", clr("Scan {} — {} [Tier {}] — Score min:{}  [{} marchés]".format(
+        scan_time, sq["name"], sq["tier"], sm, len(MARKETS)), "dim"))
     news_ok, news_lbl = news_check()
+
+    # ── Actualité : Bloquer si news HIGH dans les 30 min ──────────────
+    news_status, news_title, news_adj = news_filter()
+    if news_status == "BLOCK":
+        log("INFO", clr("📰 NEWS BLOCK : {} — scan suspendu".format(
+            (news_title or "")[:40]), "yellow"))
+        return  # Pas de signal pendant une news HIGH
+    if news_status == "CAUTION":
+        log("INFO", clr("📰 NEWS CAUTION : {} — score min +5".format(
+            (news_title or "")[:30]), "yellow"))
+        sm = min(sm + 5, 95)  # Score min augmenté si news prochaine
 
     active_markets = [m for m in MARKETS if not wknd or m.get("crypto", False)]
     if wknd:
-        log("INFO", clr("Week-end : {} marchés crypto".format(len(active_markets)), "y"))
+        log("INFO", clr("Week-end : {} marchés crypto".format(len(active_markets)), "yellow"))
 
     result_queue = Queue()
     threads = []
@@ -4949,13 +3819,13 @@ def _scan_and_send_inner():
         # ── Blocage signaux après 22h00 UTC ─────────────────────────
         now_check = datetime.now(timezone.utc).replace(tzinfo=None)
         if now_check.hour >= SIGNAL_CUTOFF_HOUR:
-            log("INFO", clr("Signal {} bloqué — après 22h00 UTC".format(sig["name"]), "y"))
+            log("INFO", clr("Signal {} bloqué — après 22h00 UTC".format(sig["name"]), "yellow"))
             continue
 
         # ── Throttle global : max 1/h, max 10/j, gap 30min ──────────
         ok_send, reason_throttle = _throttle_allowed(now_check)
         if not ok_send:
-            log("INFO", clr("Signal {} ignoré — {}".format(sig["name"], reason_throttle), "y"))
+            log("INFO", clr("Signal {} ignoré — {}".format(sig["name"], reason_throttle), "yellow"))
             continue
 
         # ── Format signal : AMD VIP si phase détectée ──────────────
@@ -5070,7 +3940,7 @@ def _scan_and_send_inner():
                 "/ref \u2192 {} filleuls = {} mois gratuit".format(PRO_PROMO, REF_TARGET, REF_MONTHS))
         tg_send(ADMIN_ID, "\u23f0 PRO expiré: @{} <code>{}</code>".format(uname or "?", uid))
     if expired:
-        log("WARN", clr("{} PRO expiré(s) → FREE".format(len(expired)), "y"))
+        log("WARN", clr("{} PRO expiré(s) → FREE".format(len(expired)), "yellow"))
 
     # ── Backup quotidien à DAILY_HOUR ─────────────────────────
     if int(hour_str) == DAILY_HOUR and date_str != getattr(_scan_and_send_inner, "_last_backup", ""):
@@ -5265,8 +4135,6 @@ def db_count_reset(uid):
 
 
 def db_count_today(uid):
-    # PDG / Admin → compteur toujours à 0 (jamais bloqué)
-    if uid == ADMIN_ID: return 0
     ds = datetime.now().strftime("%Y-%m-%d")
     con = _conn(); cur = con.cursor()
     try:
@@ -5399,8 +4267,6 @@ def db_global_stats():
 
 
 def db_is_pro(uid):
-    # PDG / Admin → toujours PRO, sans limite, sans expiration
-    if uid == ADMIN_ID: return True
     con = _conn(); cur = con.cursor()
     cur.execute("SELECT plan FROM users WHERE user_id=?", (uid,))
     row = cur.fetchone(); con.close()
@@ -5694,101 +4560,49 @@ def find_swings(c, n=5):
     return H, L
 
 
-# ── Messages de motivation variés (rotation aléatoire) ─────────────
-_MOTIVATION_MSGS = [
-    (
-        "🔥 <b>CE SIGNAL ÉTAIT POUR TOI... MAIS PAS ENCORE !</b>\n\n"
-        "Les membres PRO viennent de recevoir un signal complet\n"
-        "avec entrée, TP, SL et analyse ICT complète.\n\n"
-        "⏳ <i>Pendant que tu lis ceci, le trade est peut-être déjà en profit.</i>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "💡 <b>La différence entre FREE et PRO :</b>\n"
-        "  FREE → tu vois qu'un signal existe\n"
-        "  PRO  → tu reçois TOUT pour trader maintenant\n\n"
-        "🚀 <b>Passe PRO aujourd'hui pour seulement 10$/mois</b>"
-    ),
-    (
-        "📊 <b>SIGNAL ENVOYÉ AUX MEMBRES PRO !</b>\n\n"
-        "🟢 Direction · 🎯 Entrée exacte · ✅ TP/SL\n"
-        "💰 Estimation gains · 🧠 Score ICT · 📈 Badges\n\n"
-        "❌ <i>Version gratuite : signal masqué</i>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "💎 <b>Pourquoi passer PRO ?</b>\n\n"
-        "✅ Jusqu'à 10 signaux/jour (vs 1 en gratuit)\n"
-        "✅ Analyse ICT/SMC complète (OB, FVG, CRT, SB...)\n"
-        "✅ Alertes immédiates sans délai\n"
-        "✅ Rapports quotidiens + hebdomadaires\n\n"
-        "💵 <b>10$ USDT/mois — accès immédiat</b>"
-    ),
-    (
-        "⚡ <b>ALERTE SIGNAL — ACCÈS PRO REQUIS</b>\n\n"
-        "Un setup haute probabilité vient d'être détecté\n"
-        "par notre IA ICT/SMC v21.\n\n"
-        "🧠 <i>Score de confiance : élevé</i>\n"
-        "🕐 <i>Validité limitée dans le temps</i>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🏆 <b>REJOINS LES TRADERS PRO !</b>\n\n"
-        "👥 Des dizaines de membres profitent déjà\n"
-        "de nos signaux chaque jour.\n\n"
-        "🎯 <b>3 façons de rejoindre :</b>\n"
-        "  1️⃣ 💵 10$/mois via USDT → /pay\n"
-        "  2️⃣ 🤝 Parrainer 10 amis → 7j PRO offerts\n"
-        "  3️⃣ 📢 Partager le groupe (preuves à @leaderOdg)"
-    ),
-    (
-        "💰 <b>TU MANQUES DES PROFITS CHAQUE JOUR !</b>\n\n"
-        "Exemple avec ce signal :\n"
-        "  📦 Lot 0.01 → +$2 à +$8 par trade\n"
-        "  📦 Lot 0.10 → +$20 à +$80 par trade\n"
-        "  📦 Lot 1.00 → +$200 à +$800 par trade\n\n"
-        "⚠️ <i>Ces chiffres sont des estimations passées.\n"
-        "Le trading comporte des risques. Not financial advice.</i>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🔑 <b>Débloque l'accès PRO maintenant :</b>\n"
-        "  → /pay (10$ USDT/mois)\n"
-        "  → Contacte @leaderOdg\n"
-        "  → Rejoins le groupe VIP :"
-    ),
-    (
-        "🌍 <b>SIGNAL ACTIF EN CE MOMENT !</b>\n\n"
-        "Notre algorithme ICT/SMC vient de détecter\n"
-        "un setup sur ce marché.\n\n"
-        "Les membres PRO ont déjà reçu :\n"
-        "  🟢 Le sens du trade (BUY/SELL)\n"
-        "  📍 Le niveau d'entrée précis\n"
-        "  🎯 Les targets TP1 et TP2\n"
-        "  🛡️ Le stop loss optimal\n"
-        "  📊 L'analyse complète\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "⏰ <b>Chaque minute compte en trading.\n"
-        "Rejoins le PRO et ne rate plus rien !</b>"
-    ),
-]
-
 def fmt_signal_teasing(s):
     """
-    Message teasing amélioré pour le groupe GRATUIT.
-    Rotation aléatoire parmi 5 messages de motivation.
-    Image du signal envoyée avec boutons d'invitation PRO.
+    Message teasing pour le groupe GRATUIT.
+    Indique la paire UNIQUEMENT — aucun sens (BUY/SELL), aucun niveau TP/SL/entry.
+    Suivi d'un CTA 3 options pour passer PRO/VIP.
     """
-    emo       = CAT_EMO.get(s["cat"], "📊")
+    emo  = CAT_EMO.get(s["cat"], "📊")
     ref_admin = "https://t.me/{}?start={}".format(BOT_USER, ADMIN_ID)
 
-    # Rotation aléatoire du message de motivation
-    motivation = random.choice(_MOTIVATION_MSGS)
-
-    header = (
-        "📡 <b>SIGNAL DÉTECTÉ — {name}</b>  {emo}\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    ).format(name=s["name"], emo=emo)
-
-    footer = (
-        "\n\n━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🔗 Partage ce groupe : <code>{free_link}</code>\n"
-        "🤖 <b>AlphaBot PRO</b>  ·  @leaderodg_bot"
-    ).format(free_link=FREE_GROUP_LINK)
-
-    return header + motivation + footer
+    teasing = (
+        "📡 <b>SIGNAL détecté — {name}</b>  {emo}\n"
+        + "═" * 22 + "\n\n"
+        "Un signal sur <b>{name}</b> vient d'être envoyé\n"
+        "aux membres <b>PRO / VIP</b> avec :\n"
+        "  ✅ Direction (BUY/SELL)\n"
+        "  🎯 Prix d'entrée exact\n"
+        "  📊 TP · SL · Score ICT\n"
+        "  💵 Gains estimés par lot\n\n"
+        "⏳ <i>Tu aurais pu prendre ce trade !</i>\n\n"
+        "━" * 22 + "\n"
+        "👑 <b>REJOINS LA VERSION PRO — 3 FAÇONS :</b>\n\n"
+        "1️⃣ <b>Payer l'abonnement</b>\n"
+        "   💵 10$ USDT/mois → accès immédiat\n"
+        "   👉 /pay ou contacte @leaderOdg\n\n"
+        "2️⃣ <b>Parrainer des amis</b>\n"
+        "   🔗 Partage ton lien de parrainage\n"
+        "   📸 10 personnes → <b>7 jours PRO gratuits</b>\n"
+        "   📸 30 personnes → <b>1 mois PRO gratuit</b>\n"
+        "   👉 Envoie la preuve à @leaderOdg\n\n"
+        "3️⃣ <b>Partager ce groupe</b>\n"
+        "   📢 Partage à 10–30 personnes minimum\n"
+        "   📸 Envoie les captures à @leaderOdg\n"
+        "   🎁 Accès VIP activé manuellement\n\n"
+        "━" * 22 + "\n"
+        "🔗 Lien du groupe à partager :\n"
+        "<code>{free_link}</code>\n\n"
+        "🤖 AlphaBot PRO  ·  @leaderOdg_bot"
+    ).format(
+        name=s["name"], emo=emo,
+        ref_admin=ref_admin,
+        free_link=FREE_GROUP_LINK,
+    )
+    return teasing
 
 
 def fmt_signal_free(s, news, sl):
@@ -6344,28 +5158,6 @@ def handle_testpro(uid):
     send_account(uid, "leaderOdg", forced_plan="PRO")
 
 
-def _send_vip_link_auto(uid, reason="paiement"):
-    """
-    Envoie automatiquement le lien du groupe VIP à l'utilisateur.
-    Appelé après paiement 20$ USDT ou après 20 filleuls atteints.
-    """
-    try:
-        tg_send(uid,
-            "👑 <b>ACCÈS GROUPE VIP DÉBLOQUÉ !</b>\n\n"
-            "✅ Raison : <b>{}</b>\n\n"
-            "🔗 Clique ci-dessous pour rejoindre le groupe VIP :\n\n"
-            "⚡ Signaux premium, analyses avancées, support prioritaire.".format(reason),
-            kb={"inline_keyboard": [[
-                {"text": "👑 Rejoindre le Groupe VIP", "url": VIP_GROUP_LINK}
-            ]]})
-        tg_send(ADMIN_ID,
-            "✅ <b>LIEN VIP AUTO ENVOYÉ</b>\n"
-            "User : <code>{}</code>  Raison : {}".format(uid, reason))
-        log("INFO", clr("VIP auto-link envoyé à {} — {}".format(uid, reason), "g"))
-    except Exception as e:
-        log("WARN", "send_vip_link_auto: {}".format(e))
-
-
 def handle_txhash(uid, uname, tx_hash):
     db_save_payment(uid, tx_hash)
     tg_send(uid,
@@ -6394,21 +5186,10 @@ def handle_txhash(uid, uname, tx_hash):
             tg_send(ADMIN_ID,
                 "\U0001f7e2 <b>AUTO PRO OK</b>: @{} <code>{}</code>  {}$ \u2705".format(
                     uname or "?", uid, amount))
-            # ── Accès groupe VIP selon le montant payé ────────────────
-            if amount >= VIP_PRICE:
-                # 20$ USDT → lien VIP envoyé automatiquement
-                _send_vip_link_auto(uid, "Paiement {}$ USDT".format(round(amount, 2)))
-            else:
-                # 10$ via lien de parrainage → admin ajoute manuellement
-                tg_send(ADMIN_ID,
-                    "⚠️ <b>AJOUT VIP MANUEL REQUIS</b>\n"
-                    "@{} <code>{}</code>  a payé <b>{}$</b>\n\n"
-                    "👉 Ajoute-le manuellement au groupe VIP.".format(
-                        uname or "?", uid, round(amount, 2)))
             log("PAY", clr("AUTO PRO: @{} {} — {}$".format(uname, uid, amount), "green"))
             return
         elif i < len(delays) - 1:
-            log("INFO", clr("TX non confirmé (tentative {}/3)".format(i + 1), "y"))
+            log("INFO", clr("TX non confirmé (tentative {}/3)".format(i + 1), "yellow"))
     tg_send(uid,
         "\u23f3 <b>Vérification en attente</b>\n\n"
         "La transaction n'est pas encore confirmée.\n"
@@ -6541,7 +5322,63 @@ def score_min_for_market(m, base, atr_ratio):
     atr_adj = min(4, int(atr_ratio * 5))
     return base + vol_adj + atr_adj
 
-def get_adaptive_score_min():
+def get_adaptive_score_min(amd_phase: str = "", smc_count: int = 0) -> int:
+    """
+    Score minimum ADAPTATIF — v21.
+
+    Le seuil dépend de la QUALITÉ DU SETUP lui-même :
+      - Setup AMD Distribution + 5+ confirmations SMC → seuil élevé mais atteignable
+      - Setup moins complet → seuil plus bas mais conditions plus strictes
+      - Kill Zone → score min astronomique (signal impossible)
+
+    Logique : on ne fixe pas un seuil unique → on mesure la qualité du contexte
+    et on adapte le seuil pour que SEULS les vrais setups passent.
+    """
+    sq = get_session_quality()
+
+    # Kill Zone → bloquer (score min inatteignable)
+    if not sq["allowed"]:
+        return 999
+
+    # Base : SCORE_BASE_MIN = 75
+    base = SCORE_BASE_MIN
+
+    # Ajustement selon la phase AMD
+    if amd_phase == "DISTRIBUTION":
+        # Distribution = setup premium → on peut avoir un seuil un peu plus bas
+        # car toutes les confirmations sont là
+        base = SCORE_AMD_DISTRIB   # 82
+    elif amd_phase == "MANIPULATION":
+        base = SCORE_AMD_MANIP     # 78
+
+    # Ajustement selon le nombre de confirmations SMC
+    if smc_count >= 5:
+        base = max(base - 5, SCORE_BASE_MIN)  # Excellent setup
+    elif smc_count >= 4:
+        base = max(base - 2, SCORE_BASE_MIN)  # Bon setup
+    elif smc_count <= 2:
+        base = min(base + 8, SCORE_ELITE_MIN)  # Setup faible → exiger plus
+
+    # Ajustement session
+    tier = sq["tier"]
+    if tier == 1:   base = max(base - 3, SCORE_BASE_MIN)  # London/Overlap → optimal
+    elif tier == 2: base = base                             # NY / Weekend → standard
+    elif tier == 3: base = min(base + 5, SCORE_ELITE_MIN)  # Sessions faibles → exiger plus
+
+    # Régime de marché
+    regime = AI_REG.get("regime", "RANGING")
+    if regime == "CRISIS":   base = min(base + 15, 999)  # Crise = pas de signal
+    elif regime == "VOLATILE": base = min(base + 8, SCORE_ELITE_MIN)
+    elif regime == "TRENDING": base = max(base - 3, SCORE_BASE_MIN)
+
+    return base
+
+
+def _old_get_adaptive_score_min():
+    """Ancienne version — conservée pour rétrocompatibilité interne."""
+    return get_adaptive_score_min()
+
+def get_adaptive_score_min_legacy():
     """
     Score minimum intelligent :
     - Kill Zone Londres/NY     → score min BAISSÉ  (meilleure session)
@@ -6551,6 +5388,7 @@ def get_adaptive_score_min():
     - Régime TRENDING          → score min BAISSÉ  (tendance claire)
     """
     sn, sm, sl, wknd = get_session()
+    reg  = AI_REG.get("regime", "RANGING")
     base = sm  # score de base de la session
 
     # Ajustement selon la qualité de la session
@@ -6565,19 +5403,20 @@ def get_adaptive_score_min():
         "WEEKEND":   +8,   # Week-end = volatile
     }.get(sn, 0)
 
-    final = base + session_adj
+    # Ajustement selon le régime de marché
+    regime_adj = {
+        "TRENDING_BULL": -3,  # Tendance claire → plus facile
+        "TRENDING_BEAR": -3,
+        "ACCUMULATION":  -1,
+        "RANGING":       +2,  # Range → plus de faux signaux
+        "VOLATILE":      +8,  # Volatile → exiger plus de confirmations
+        "CRISIS":        +20, # Crise → quasi stop
+    }.get(reg, 0)
 
-    # Plancher adaptatif : plus permissif en Kill Zone, plus strict hors session
-    if sn in ("LONDON_KZ", "NY_KZ"):
-        floor, ceil = 82, 93
-    elif sn in ("OVERLAP", "NY", "LONDON"):
-        floor, ceil = 85, 95
-    else:
-        floor, ceil = 88, 97   # Asie / OFF / Weekend → plus strict
-
-    log("INFO", clr("Score min adaptatif: {} (base:{} sess:{:+d})".format(
-        final, base, session_adj), "d"))
-    return max(floor, min(ceil, final))
+    final = base + session_adj + regime_adj
+    log("INFO", clr("Score min adaptatif: {} (base:{} sess:{:+d} regime:{:+d})".format(
+        final, base, session_adj, regime_adj), "d"))
+    return max(85, min(95, final))
 
 
 
@@ -6710,7 +5549,7 @@ def send_pro(uid):
         "  \u2022 Tout PRO +\n"
         "  \u2022 Accès prioritaire aux meilleurs setups\n"
         "  \u2022 Support direct @leaderOdg\n"
-        "  \u2022 <b>{}$ USDT/mois</b>\n\n".format(VIP_PRICE) +
+        "  \u2022 <b>25$ USDT/mois</b>\n\n" +
         "\u2501" * 22 + "\n"
         "\U0001f91d <b>Parrainage GRATUIT</b>\n"
         "{} filleuls = {} mois PRO (renouvelable)\n"
@@ -6719,8 +5558,8 @@ def send_pro(uid):
             REF_TARGET, REF_MONTHS, refs, REF_TARGET),
         kb={"inline_keyboard": [
             [{"text": "🚀 STARTER — 5$/mois",  "callback_data": "pay_plan_STARTER"}],
-            [{"text": "💠 PRO — {}$/mois".format(PRO_PRICE),      "callback_data": "pay_plan_PRO"}],
-            [{"text": "👑 VIP — {}$/mois".format(VIP_PRICE),      "callback_data": "pay_plan_VIP"}],
+            [{"text": "💠 PRO — 10$/mois",      "callback_data": "pay_plan_PRO"}],
+            [{"text": "👑 VIP — 25$/mois",      "callback_data": "pay_plan_VIP"}],
             [{"text": "🤝 Parrainage gratuit",   "callback_data": "ref"}],
         ]})
 
@@ -6782,8 +5621,8 @@ def kb_reply():
 def kb_pro_plans():
     return {"inline_keyboard":[
         [{"text":"🚀 STARTER — 5$/mois",  "callback_data":"pay_plan_STARTER"}],
-        [{"text":"💠 PRO — {}$/mois".format(PRO_PRICE),     "callback_data":"pay_plan_PRO"}],
-        [{"text":"👑 VIP — {}$/mois".format(VIP_PRICE),     "callback_data":"pay_plan_VIP"}],
+        [{"text":"💠 PRO — 10$/mois",     "callback_data":"pay_plan_PRO"}],
+        [{"text":"👑 VIP — 25$/mois",     "callback_data":"pay_plan_VIP"}],
         [{"text":"🤝 Parrainage gratuit", "callback_data":"ref"}],
     ]}
 
@@ -6794,83 +5633,29 @@ def kb_admin_back(): return {"inline_keyboard":[[{"text":"◀️ Panel Admin","c
 # ══════════════════════════════════════════════════════
 def send_welcome(uid, uname, ref_by=0):
     db_register(uid, uname, ref_by, tg_fn=tg_send)
-    # ── Vérifier si le parrain atteint exactement 20 filleuls → VIP auto ─
-    if ref_by and ref_by != uid:
-        try:
-            ref_count = get_refs(ref_by)
-            if ref_count == REF_TARGET:
-                # Exactement 20 filleuls atteints → activer PRO + envoyer lien VIP
-                if not is_pro(ref_by):
-                    db_activate_pro(ref_by, "REF_AUTO", days=None)
-                _send_vip_link_auto(ref_by, "🏆 {} filleuls parrainés !".format(ref_count))
-        except Exception as _re:
-            log("WARN", "ref VIP check: {}".format(_re))
-    p = is_pro(uid); sn, sm, sl_l, wknd = get_session()
-    sm = get_adaptive_score_min()
-    name_str = "@" + uname if uname else "Trader"
-    wknd_note = "\n🌍 <b>Week-end : BTC/ETH uniquement !</b>" if wknd else ""
-
-    # ── MSG 1 : Présentation personnelle leaderOdg ────────────────────
-    try:
-        total, pro, sigs, pays, g1d = db_global_stats()
-    except Exception:
-        total, pro, sigs, pays, g1d = 0, 0, 0, 0, 0.0
-    try:
-        st = daily_stats()
-        wins = st.get("wins", 0); n = st.get("n", 0)
-        wr = int(wins / n * 100) if n > 0 else 78
-        g_day = st.get("g1", 0.0)
-    except Exception:
-        wr, g_day = 78, g1d
-
+    tg_sticker(uid, STK_W)
+    p = is_pro(uid); sn,sm,sl_l,wknd = get_session()
+    plan_line = ("🎁 <b>ESSAI PRO {} JOURS OFFERT !</b> ✅".format(TRIAL_DAYS) if p
+                 else "🔓 FREE → /pay")
+    wknd_note = "\n🌍 <b>Week-end : crypto uniquement !</b>" if wknd else ""
     tg_send(uid,
-        "👋 <b>Bienvenue {} !</b>\n\n"
-        "Je suis <b>@leaderOdg</b> 🎯\n"
-        "Trader professionnel ICT/SMC — je partage mes signaux\n"
-        "<b>100% GRATUITEMENT</b> à tous les membres.\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "📊 <b>CE QUE TU REÇOIS GRATUITEMENT :</b>\n"
-        "✅ Mes signaux personnels H4/M15 — Forex, Or, BTC\n"
-        "✅ Analyse fondamentale live 24h/24\n"
-        "✅ Suivi TP/SL + mises à jour en temps réel\n"
-        "✅ Formation trading pour débutants\n"
-        "✅ BTC analysé 7j/7, week-ends inclus\n\n"
-        "📈 Winrate actuel : <b>{}%</b>  ·  {} membres actifs".format(
-            name_str, wr, total))
-
-    time.sleep(1)
-
-    # ── MSG 2 : Onboarding clair + appel à l'action ───────────────────
-    plan_line = "💠 <b>PRO ACTIF</b> ✅ — Max {}/j".format(PRO_LIMIT) if p else "🔓 FREE actif → /pay pour débloquer PRO"
-    tg_send(uid,
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🚀 <b>COMMENT DÉMARRER ?</b>\n\n"
-        "<b>① Tu débutes dans le trading ?</b>\n"
-        "👉 Écris-moi directement : @leaderOdg\n"
-        "   Je t'accompagne personnellement\n"
-        "   pour bien prendre mes signaux.\n\n"
-        "<b>② Tu veux trader avec un vrai compte ?</b>\n"
-        "👉 Ouvre ton compte via mon lien Exness\n"
-        "   (dépôt min <b>10$</b> — je t'aide à configurer)\n\n"
-        "<b>③ Tu es déjà trader expérimenté ?</b>\n"
-        "👉 Signaux VIP = <b>10$ USDT TRC20 / mois</b>\n"
-        "   Contacte-moi : @leaderOdg\n"
-        "   Accès immédiat après paiement ✅\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "💳 <b>PAIEMENTS :</b> USDT TRC20 / Exness\n\n"
-        "{}\n"
-        "🕐 Session : {}{}  ·  Score min : <b>{}</b>\n\n"
-        "📲 <b>Partage à tes amis traders !</b> 🙏\n\n"
-        "<i>⚠️ Mes signaux sont des analyses personnelles, "
-        "pas des conseils financiers.</i>".format(
-            plan_line, sl_l, wknd_note, sm),
-        kb={"inline_keyboard": [
-            [{"text": "💰 Ouvrir mon compte Exness", "url": BROKER_LINK}],
-            [{"text": "✉️ Contacter @leaderOdg",    "url": "https://t.me/leaderOdg"},
-             {"text": "📌 Groupe gratuit",            "url": FREE_GROUP_LINK}],
-            [{"text": "📡 Mes Signaux",  "callback_data": "signals"},
-             {"text": "💠 Devenir PRO", "callback_data": "pro"}],
-        ]})
+        "🤖 <b>AlphaBot PRO v10 — Bienvenue {} !</b>\n".format("@"+uname if uname else "Trader") +
+        "═"*22 + "\n\n"
+        "🆔 <b>ID :</b> <code>{}</code>\n"
+        "📌 <b>Plan :</b> {}\n"
+        "🕐 <b>Session :</b> {}  ·  Score min : <b>{}</b>{}\n\n".format(uid,plan_line,sl_l,sm,wknd_note)+
+        "═"*22+"\n"
+        "🤖 <b>20 agents IA</b> scannent en parallèle :\n"
+        "  🥇 Or · Argent  ·  ₿ BTC\n"
+        "  💱 Forex : EURUSD · GBPUSD · USDJPY · GBPJPY · EURJPY\n"
+        "           AUDUSD · AUDJPY · CADJPY · USDCHF · NZDUSD · USDCAD\n"
+        "  📈 Indices : NAS100 · SPX500 · US30  ·  🛢 USOIL\n\n"
+        "⚡ <b> actif</b> — signal même sans setup ICT parfait !\n\n"
+        "═"*22+"\n"
+        "🎁 Essai PRO {} jours GRATUIT !\n"
+        "💠 PRO = max {}/j  ·  🤝 {} filleuls = {} mois PRO\n\n"
+        "📖 /guide ou choisis ci-dessous ↓".format(TRIAL_DAYS,PRO_LIMIT,REF_TARGET,REF_MONTHS),
+        kb=kb_reply())    # ← clavier physique persistant
 
 def send_start(uid, uname, ref_by=0):
     """Alias for send_welcome."""
@@ -6888,7 +5673,7 @@ def send_signals_info(uid):
     if rows:
         lines.append("📋 <b>Signaux envoyés :</b>"); lines.append("")
         for row in rows:
-            pair,side,rr,g001,g1,l001,l1,sess,mode = _safe_row(row, 9)
+            pair,side,rr,g001,g1,l001,l1,sess,mode = row
             arrow = "⬆️" if side=="BUY" else "⬇️"
             icon = "✅" if rr>=2.5 else "⚪"
             gain = "+${:.0f}".format(g1) if rr>=2.5 else "---"
@@ -6926,10 +5711,11 @@ def send_pro_page(uid):
         "  • Tout STARTER +\n"
         "  • Rapports quotidiens + hebdo\n"
         "  • Suivi TP/SL automatique\n"
+        "  • Agent IA Binance (Challenge 5$→500$)\n"
         "  • <b>10$ USDT/mois</b>\n\n"
         "👑 <b>VIP</b>  —  Signaux illimités\n"
         "  • Tout PRO + Support @leaderOdg\n"
-        "  • <b>{}$ USDT/mois</b>\n\n".format(VIP_PRICE) +
+        "  • <b>25$ USDT/mois</b>\n\n"
         "━"*22+"\n"
         "🤝 <b>Parrainage GRATUIT</b>\n"
         "{} filleuls = {} mois PRO (renouvelable)\n"
@@ -6939,7 +5725,7 @@ def send_pro_page(uid):
 
 def send_pay_plan(uid, plan_key="PRO"):
     plans = {"FREE":{"price":0,"label":"FREE"},"STARTER":{"price":5,"label":"STARTER"},
-             "PRO":{"price":PRO_PRICE,"label":"PRO"},"VIP":{"price":VIP_PRICE,"label":"VIP"}}
+             "PRO":{"price":10,"label":"PRO"},"VIP":{"price":25,"label":"VIP"}}
     plan = plans.get(plan_key, plans["PRO"])
     price = plan["price"]; label = plan["label"]
     sep = "━"*22
@@ -6966,7 +5752,7 @@ def send_mes_gains(uid):
     if not st["n"]: tg_send(uid,"💸 <b>MES GAINS</b>\n\nAucun signal aujourd\'hui.",kb=kb_back()); return
     lines = ["💸 <b>GAINS DU JOUR</b>","═"*22,""]
     for row in st["rows"]:
-        pair,side,rr,g001,g1,l001,l1,sess,mode = _safe_row(row, 9)
+        pair,side,rr,g001,g1,l001,l1,sess,mode = row
         ok=rr>=2.5; icon="✅" if ok else "❌"; d="⬆️" if side=="BUY" else "⬇️"
         tag=" ⚡" if mode!="NORMAL" else ""
         lines.append("{} <b>{}</b>{} {} {}  RR 1:{}".format(icon,pair,tag,d,side,rr))
@@ -6979,56 +5765,32 @@ def send_mes_gains(uid):
               "<i>Estimation TP atteint. Pas un conseil financier.</i>"]
     tg_send(uid,"\n".join(lines),kb=kb_back())
 
-# Alias pour le callback "gains"
-send_gains = send_mes_gains
-
 def send_affilie(uid, uname):
-    refs = get_refs(uid)
-    link = "https://t.me/{}?start={}".format(BOT_USER, uid)
-    done = min(refs, REF_TARGET); pct = int(done / REF_TARGET * 100)
-    fill = int(done / REF_TARGET * 12); bar = "🟩" * fill + "⬛" * (12 - fill)
-
-    # ── Message 1 : texte à partager + bouton de partage cliquable ──
-    share_text = (
+    refs=get_refs(uid); link="https://t.me/{}?start={}".format(BOT_USER,uid)
+    done=min(refs,REF_TARGET); pct=int(done/REF_TARGET*100)
+    fill=int(done/REF_TARGET*12); bar="🟩"*fill+"⬛"*(12-fill)
+    tg_send(uid,
+        ("📋 <b>COPIE CE MESSAGE ET ENVOIE À TES AMIS :</b>\n\n"+"━"*22+"\n\n"
         "🤖 <b>AlphaBot PRO</b> — Signaux trading GRATUITS !\n\n"
         "📡 <b>Forex, Or, BTC, Indices...</b>\n"
         "🎯 Entrées directes avec SL & TP automatiques\n"
-        "💰 Jusqu'à <b>+$500+ par signal</b> (lot 1.00)\n"
+        "💰 Jusqu\'à <b>+$500+ par signal</b> (lot 1.00)\n"
         "📊 Analyse ICT/SMC\n\n"
-        "✅ <b>Gratuit</b> — {} signal/jour\n"
-        "💠 <b>PRO seulement 10$</b> — {} signaux/jour\n\n"
-        "👉 Rejoins via mon lien :\n"
-        "<code>{}</code>"
-    ).format(FREE_LIMIT, PRO_LIMIT, link)
-
-    tg_send(uid, share_text,
-        kb={"inline_keyboard": [
-            [{"text": "🚀 Partager mon lien de parrainage", "url": "https://t.me/share/url?url={}&text=Rejoins+AlphaBot+PRO+gratuitement+!".format(link)}],
-            [{"text": "👥 Voir mes filleuls", "callback_data": "ref_stats"}],
-            [{"text": "◀️ Retour", "callback_data": "start"}],
-        ]})
-
-    # ── Message 2 : tableau de bord filleuls ──────────────────────
-    if refs >= REF_TARGET:
-        rew = "🏆 {} mois PRO actif ! Re-parraine pour renouveler !".format(REF_MONTHS)
-    elif refs >= REF_TARGET // 2:
-        rew = "🔥 Plus que {} filleuls → {} mois PRO !".format(REF_TARGET - refs, REF_MONTHS)
-    else:
-        rew = "👋 {} filleuls pour l'instant. Continue !".format(refs)
-
+        "✅ <b>Gratuit</b> — signaux/jour\n"
+        "💠 <b>PRO seulement 10$</b> — 10 signaux/jour\n\n"
+        "👉 <b>Clique ici :</b>\n<code>{}</code>\n\n"+"━"*22).format(link),
+        kb={"inline_keyboard":[[{"text":"🤝 Voir mes filleuls","callback_data":"ref_stats"}]]})
+    rew = ("🏆 {} mois PRO actif ! Re-parraine pour renouveler !".format(REF_MONTHS) if refs>=REF_TARGET
+           else "🔥 Plus que {} de plus → {} mois PRO !".format(REF_TARGET-refs,REF_MONTHS) if refs>=20
+           else "👋 {} filleuls pour l\'instant. Continue !".format(refs))
     tg_send(uid,
-        "🤝 <b>MES FILLEULS</b>\n" + "═" * 22 + "\n\n"
+        "🤝 <b>MES FILLEULS</b>\n"+"═"*22+"\n\n"
         "<b>{}/{}</b>  ({}%)\n{}\n\n"
         "{}\n\n"
-        "🏆 <b>{} filleuls</b> = {} MOIS PRO GRATUIT\n"
-        "✅ Activation automatique dès {} atteints\n\n"
-        "👑 <b>20 filleuls</b> = Accès Groupe VIP automatique !".format(
-            done, REF_TARGET, pct, bar, rew,
-            REF_TARGET, REF_MONTHS, REF_TARGET),
-        kb={"inline_keyboard": [
-            [{"text": "🚀 Partager mon lien", "url": "https://t.me/share/url?url={}&text=Rejoins+AlphaBot+PRO+gratuitement+!".format(link)}],
-            [{"text": "◀️ Retour", "callback_data": "start"}],
-        ]})
+        "🏆 {} filleuls = <b>{} MOIS PRO GRATUIT</b>\n"
+        "✅ <b>Activation automatique</b> dès {} atteints".format(
+            done,REF_TARGET,pct,bar,rew,REF_TARGET,REF_MONTHS,REF_TARGET),
+        kb=kb_back())
 
 # ══════════════════════════════════════════════════════
 #  ADMIN COMPLET
@@ -7044,24 +5806,28 @@ def kb_admin_full():
         [{"text":"📡 Forcer scan","callback_data":"adm_scan"},{"text":"🔍 Debug scan","callback_data":"adm_debug"}],
         [{"text":"✉️ Message → TOUS","callback_data":"adm_bcast_all"},{"text":"✉️ Message → PRO","callback_data":"adm_bcast_pro"}],
         [{"text":"📢 Messages Promo","callback_data":"adm_promo_list"},{"text":"🌍 État marchés","callback_data":"adm_marches"}],
+        [{"text":"🏆 Challenge IA","callback_data":"challenge"},{"text":"🔧 Recommandations","callback_data":"adm_reco"}],
         [{"text":"🧠 Mémoire IA","callback_data":"adm_memory"}],
     ]}
 
 def send_admin_full(uid):
     if uid!=ADMIN_ID: tg_send(uid,"❌ Accès refusé."); return
     total,pro,sigs,pays,g1d=global_stats(); sn,sm,sl_l,_=get_session(); sm=get_adaptive_score_min()
-    st=daily_stats(); pend=pending_pays()
+    st=daily_stats(); pend=pending_pays(); ch=chal_get(); reg=AI_REG
     tg_sticker(uid,STK_PRO)
     tg_send(uid,
-        "🛡 <b>PANEL ADMIN — AlphaBot PRO v21</b>\n"+"═"*22+"\n\n"
+        "🛡 <b>PANEL ADMIN — AlphaBot v10</b>\n"+"═"*22+"\n\n"
         "👥 Membres: <b>{}</b>  ·  PRO: <b>{}</b>  ·  FREE: <b>{}</b>\n"
         "📡 Signaux: <b>{}</b>  ·  Gains: <b>+${}</b>\n"
         "💰 Payés: <b>{}</b>  ·  En attente: <b>{}</b>{}\n\n"
+        "🤖 <b>IA:</b> {:.4f}$ AM:{}/4 W:{} L:{}\n"
+        "🌍 Régime: <b>{}</b>  Positions: {}/{}\n\n"
         "🕐 Session: {}  Score min: {}\n\n"
         "/activate /degrade /scan /debug /stats /membres /marches".format(
             total,pro,total-pro,st["n"],st["g1"],pays,len(pend),
             "  ⚠️ À valider!" if pend else "",
-            sl_l, sm),
+            ch["balance"],ch["am_cycle"],ch.get("today_w",0),ch.get("today_l",0),
+            reg.get("regime","?"),sum(1 for t in AI_OT.values() if t["status"]=="open"),MAX_OPEN,sl_l,sm),
         kb=kb_admin_full())
 
 def send_admin_stats_full(uid):
@@ -7150,6 +5916,7 @@ def handle_monstatus_full(uid):
     plan,exp,src=get_pro_info(uid); total,pro,sigs,pays,g1d=global_stats()
     sn,sm,sl_l,wknd=get_session(); st=daily_stats(); ws=weekly_stats()
     cnt=count_today(uid); pend=pending_pays(); refs=get_refs(uid)
+    ch=chal_get(); reg=AI_REG
     win_pct=int(st["wins"]/st["n"]*100) if st["n"] else 0
     pend_str="\n⏳ <b>{} paiement(s) en attente !</b>".format(len(pend)) if pend else ""
     tg_send(uid,
@@ -7175,7 +5942,7 @@ def handle_monstatus_full(uid):
             total,pro,total-pro,pays,len(pend),pend_str,sigs,
             st["n"],st["wins"],win_pct,st["g001"],st["g1"],
             ws["n"],ws["wins"],ws["g1"],
-            uid))
+            ch["balance"],ch["am_cycle"],reg.get("regime","?"),uid))
 
 def handle_marches_full(uid):
     sn,sm,sl_l,wknd=get_session(); sm=get_adaptive_score_min()
@@ -7300,7 +6067,7 @@ def _build_promo(pid):
     if not st["n"]: return None
     lines=["📊 <b>RÉSULTATS D\'AUJOURD\'HUI</b>\n"]
     for row in st["rows"]:
-        pair,side,rr,g001,g1,l001,l1,sess,mode=_safe_row(row, 9)
+        pair,side,rr,g001,g1,l001,l1,sess,mode=row
         ok=rr>=2.5; icon="🟢" if ok else "🔴"; d="ACHAT" if side=="BUY" else "VENTE"
         res="✅ TP → <b>+${:.0f}</b>".format(g1) if ok else "❌ SL → <b>-${:.0f}</b>".format(l1)
         lines.append("{} <b>{}</b> {}  {} (lot 0.01)".format(icon,pair,d,res))
@@ -7637,14 +6404,6 @@ def run_backtest(uid, nb_candles=150, tf="1h", score_min=72):
 def dispatch(uid, uname, txt):
     """Dispatcher principal — gère boutons clavier ET commandes slash."""
     t = txt.strip()
-
-    # ── Cooldown 2s par bouton/utilisateur (anti double-clic) ────────
-    if not t.startswith("/"):
-        _cd_key = "{}:{}".format(uid, t)
-        _now = time.time()
-        if _DISPATCH_CD.get(_cd_key, 0) + 2.0 > _now:
-            return
-        _DISPATCH_CD[_cd_key] = _now
     # ── /start géré EN PREMIER pour préserver ref_by ─────────────────
     _p0 = t.split()
     _c0 = _p0[0].lower().lstrip("/").split("@")[0] if _p0 else ""
@@ -7795,11 +6554,8 @@ def dispatch(uid, uname, txt):
             from alphabot_payment_manager import cmd_degrade_manual
             cmd_degrade_manual(uid, arg); return
 
-    # ── Fallback : afficher le menu (cooldown 10s anti-flood) ───────
-    _fb_now = time.time()
-    if _DISPATCH_CD_FALLBACK.get(uid, 0) + 10.0 < _fb_now:
-        _DISPATCH_CD_FALLBACK[uid] = _fb_now
-        send_welcome(uid, uname)
+    # ── Fallback : afficher le menu ───────────────────────────────
+    send_welcome(uid, uname)
 
 
 def dispatch_cb(cb):
@@ -8018,89 +6774,78 @@ def handle_new_group_member(uid, uname, first_name):
     """
     Nouveau membre rejoint le groupe :
     1. Enregistrement en base (via track_user)
-    2. Message de bienvenue brandé @leaderOdg — personnel, pas de mention système
-    3. Notification admin
+    2. Message de bienvenue + essai PRO
+    3. Invitation groupe VIP
+    4. Notification admin (via track_user)
     """
     try:
-        track_user(uid, uname, first_name)
-        fname = first_name or ("@" + uname if uname else "Trader")
+        track_user(uid, uname, first_name)  # enregistrement + notif admin
+        name = "@" + uname if uname else first_name or "Trader"
 
-        # ── Message de bienvenue — ton de @leaderOdg, pas de bot visible ──
+        # ── Message de bienvenue ────────────────────────────────
         tg_send(uid,
             "👋 <b>Bienvenue {} !</b>\n\n"
-            "Je suis <b>@leaderOdg</b> 🎯\n"
-            "Trader professionnel ICT/SMC — je partage mes signaux\n"
-            "<b>100% GRATUITEMENT</b> à tous les membres de ce groupe.\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "📊 <b>CE QUE TU REÇOIS GRATUITEMENT :</b>\n"
-            "✅ Mes signaux personnels M15/H4 — Forex, Or, BTC\n"
-            "✅ Analyse fondamentale live 24h/24\n"
-            "✅ Suivi TP/SL + mises à jour en temps réel\n"
-            "✅ Formation trading pour débutants\n"
-            "✅ BTC analysé 7j/7, week-ends inclus\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "🚀 <b>COMMENT DÉMARRER ?</b>\n\n"
-            "<b>① Tu débutes dans le trading ?</b>\n"
-            "👉 Écris-moi directement : @leaderOdg\n"
-            "   Je t'accompagne personnellement.\n\n"
-            "<b>② Tu veux trader avec un vrai compte ?</b>\n"
-            "👉 Ouvre ton compte via <b>mon lien Exness</b> (dépôt min 10$)\n"
-            "   Je t'aide à tout configurer 🎯\n\n"
-            "<b>③ Tu es déjà trader expérimenté ?</b>\n"
-            "👉 Signaux VIP = <b>10$ USDT TRC20 / mois</b>\n"
-            "   Contacte-moi : @leaderOdg\n"
-            "   Accès immédiat après paiement ✅\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "💳 <b>PAIEMENTS ACCEPTÉS :</b>\n"
-            "✅ USDT TRC20\n"
-            "✅ Compte Exness via mon lien d'affiliation\n\n"
-            "📲 <b>Partage ce groupe à tes amis traders !</b> 🙏\n\n"
-            "<i>⚠️ Le trading comporte des risques. "
-            "Mes signaux sont des analyses personnelles, "
-            "pas des conseils financiers.</i>".format(fname),
-            kb={"inline_keyboard": [
-                [{"text": "💰 Ouvrir mon compte Exness", "url": BROKER_LINK}],
-                [{"text": "✉️ Me contacter — @leaderOdg", "url": "https://t.me/leaderOdg"}],
-                [{"text": "📌 Groupe signaux gratuits",   "url": FREE_GROUP_LINK}],
-            ]})
+            "🤖 <b>AlphaBot PRO</b> — Signaux trading automatiques\n\n"
+            "✅ {} signaux/jour GRATUITS\n"
+            "📊 Forex · Or · BTC · Indices · Pétrole\n"
+            "🎯 Entrée + TP + SL automatiques\n"
+            "⚡  actif\n\n"
+            "🎁 <b>Essai PRO {} jours offert !</b>\n\n"
+            "👉 Clique /start pour commencer".format(
+                name, FREE_LIMIT, TRIAL_DAYS),
+            kb={{"inline_keyboard": [[
+                {{"text": "🚀 Démarrer", "callback_data": "start"}},
+                {{"text": "💎 Voir PRO",  "callback_data": "pro"}},
+            ]]}})
+
+        # ── Recommandation groupe VIP ───────────────────────────
+        time.sleep(2)
+        try:
+            vip_link = "https://t.me/+{}".format(
+                VIP_CH.lstrip("-100") if VIP_CH.startswith("-100") else VIP_CH.lstrip("-"))
+        except:
+            vip_link = "https://t.me/leaderOdg"
+        tg_send(uid,
+            "🏆 <b>GROUPE VIP AlphaBot</b>\n\n"
+            "Rejoins notre groupe VIP pour :\n"
+            "✅ Signaux en temps réel\n"
+            "✅ Analyses de marché en direct\n"
+            "✅ Discussion avec @leaderOdg\n\n"
+            "❓ Questions sur la méthode ICT/SMC ?\n"
+            "👉 Contacte directement @leaderOdg\n\n"
+            "📩 Demande d'accès au groupe VIP :",
+            kb={{"inline_keyboard": [[
+                {{"text": "👑 Rejoindre le groupe VIP",
+                  "url": "https://t.me/leaderOdg"}},
+            ]]}})
 
         # ── Notification admin ──────────────────────────────────
         total, pro, _, _, _ = global_stats()
         tg_send(ADMIN_ID,
             "👤 <b>NOUVEAU MEMBRE</b>\n\n"
-            "🆔 ID      : <code>{}</code>\n"
+            "🆔 ID     : <code>{}</code>\n"
             "👤 Username: {}\n"
             "📋 Prénom  : {}\n\n"
-            "👥 Total : <b>{}</b>  (PRO: {})\n\n"
+            "👥 Total membres : <b>{}</b>  (PRO: {})\n\n"
             "Actions rapides ↓".format(
                 uid,
                 "@" + uname if uname else "—",
                 first_name or "—",
                 total, pro),
-            kb={"inline_keyboard": [[
-                {"text": "💠 Activer PRO",
-                 "callback_data": "adm_pro_{}".format(uid)},
-                {"text": "💬 Contacter",
-                 "url": "tg://user?id={}".format(uid)},
-            ]]})
+            kb={{"inline_keyboard": [[
+                {{"text": "💠 Activer PRO",
+                  "callback_data": "adm_pro_{}".format(uid)}},
+                {{"text": "💬 Contacter",
+                  "url": "tg://user?id={}".format(uid)}},
+            ]]}})
 
-        log("INFO", clr("Nouveau membre: @{} ID:{} — welcome leaderOdg envoyé".format(
+        log("INFO", clr("Nouveau membre: @{} ID:{} — notif admin envoyée".format(
             uname or "?", uid), "g"))
     except Exception as e:
         log("WARN", "handle_new_group_member: {}".format(e))
 
 def process_update(upd):
     try:
-        # ── Ignorer les updates antérieurs au démarrage du bot ───────
-        upd_date = 0
-        if "message" in upd:
-            upd_date = upd["message"].get("date", 0)
-        elif "callback_query" in upd:
-            # FIX v21.3: callback_query.message.date = date du message ORIGINAL
-            # pas du clic → on ne filtre pas les callbacks pour éviter de les ignorer
-            upd_date = time.time()
-        if upd_date and upd_date < (_BOT_START_TIME - 10):
-            return  # update trop ancien → ignoré silencieusement
         # ── Nouveau membre dans le groupe ────────────────────────
         if "chat_member" in upd:
             cm = upd["chat_member"]
@@ -8419,27 +7164,34 @@ color:#fff;font-size:14px;cursor:pointer;font-weight:700}
 # ══════════════════════════════════════════════════════
 def startup():
     print("\n"+clr("  ╔══════════════════════════════════════════════════╗","b","c"))
-    print(clr("  ║   @leaderOdg — Signaux ICT/SMC PRO              ║","b","c"))
-    print(clr("  ║   Tendance H4 · Entrée M15 · IA Claude+Gemini   ║","b","c"))
-    print(clr("  ║   20 marchés · FREE/PRO/VIP · USDT TRC20        ║","b","c"))
+    print(clr("  ║  AlphaBot PRO v10 — IA Adaptative · ICT/SMC  ║","b","c"))
+    print(clr("  ║  Forex·Métaux·Crypto·Indices · ICT/SMC · ⚡Mode   ║","b","c"))
     print(clr("  ╚══════════════════════════════════════════════════╝","b","c")+"\n")
     db_init()
     db_register(ADMIN_ID,"leaderOdg"); db_pro(ADMIN_ID,"ADMIN_AUTO",days=None)
+    log("INFO",clr("Init données Binance...","c"))
+    threading.Thread(target=refresh_exch,daemon=True).start()
+    threading.Thread(target=refresh_ai,daemon=True).start()
+    sn,sm,sl_l,wknd=get_session(); ch=chal_get()
     # Message de démarrage en arrière-plan — ne bloque pas le serveur HTTP
     def _notify():
         try:
-            sn_, sm_, sl_l_, wknd_ = get_session()
-            sm_real_ = get_adaptive_score_min()
-            sess_str = "🌍 <b>Week-end : crypto uniquement !</b>" if wknd_ else "📈 Session active : <b>{}</b>".format(sl_l_)
             tg_send(ADMIN_ID,
-                "🤖 <b>AlphaBot PRO v21.5 — EN LIGNE !</b>\n\n"
+                "🤖 <b>AlphaBot PRO v10 — DÉMARRÉ !</b>\n\n"
+                "⚡  actif\n"
+                "🕐 {}  🎯 Score min : <b>{}</b>\n"
                 "{}\n"
-                "🎯 Score min : <b>{}</b>\n"
+                "🌍 Régime IA : <b>{}</b>\n"
+                "🏆 Challenge : <b>{:.4f}$</b> → {:.0f}$\n"
                 "📡 FREE {}/j  ·  PRO {}/j\n\n"
                 "✅ Bot actif — répond aux commandes\n"
                 "🛠 /admin pour le panel".format(
-                    sess_str, sm_real_, FREE_LIMIT, PRO_LIMIT),
-                kb=kb_reply())
+                    sl_l, sm,
+                    "🌍 <b>Week-end : crypto uniquement !</b>" if wknd else "📈 Session : {}".format(sl_l),
+                    AI_REG.get("regime","Init"),
+                    ch["balance"], ch["start_bal"]*100,
+                    FREE_LIMIT, PRO_LIMIT),
+                kb=kb_reply())   # ← envoie le clavier au démarrage
         except Exception as e:
             log("WARN", "notify startup: {}".format(e))
     threading.Thread(target=_notify, daemon=True).start()
@@ -8490,15 +7242,19 @@ def make_wh():
                 except: pass
         def do_GET(self):
             path = self.path.split("?")[0]
+            ch   = chal_get(); reg = AI_REG
             if path == "/health":
-                body = ('{"status":"ok","cycles":' + str(_cycles_no_signal) + '}').encode()
+                # Endpoint dédié au keepalive — réponse JSON légère
+                body = '{{"status":"ok","balance":{:.4f},"regime":"{}","cycles":{}}}'.format(
+                    ch["balance"], reg.get("regime","?"), _cycles_no_signal).encode()
                 self.send_response(200)
                 self.send_header("Content-Type","application/json")
                 self.end_headers(); self.wfile.write(body)
             else:
                 self.send_response(200); self.end_headers()
                 self.wfile.write(
-                    "AlphaBot PRO v21 OK | cycles: {}".format(_cycles_no_signal).encode())
+                    "AlphaBot v10 OK | {:.4f}$ | {} | cycles: {}".format(
+                        ch["balance"], reg.get("regime","?"), _cycles_no_signal).encode())
         def log_message(self, *a): pass
     return WH
 
@@ -8519,6 +7275,8 @@ def main():
         # ── ÉTAPE 3 : Telegram + IA en arrière-plan ──────────────
         def _init_bg():
             # Binance data
+            threading.Thread(target=refresh_exch, daemon=True).start()
+            threading.Thread(target=refresh_ai, daemon=True).start()
             # Configurer le webhook
             tg_req("deleteWebhook", {"drop_pending_updates": "true"})
             time.sleep(1)
@@ -8530,41 +7288,43 @@ def main():
             })
             if r.get("ok"): log("INFO", clr("Webhook OK — Bot prêt!", "b", "g"))
             else: log("ERR", clr("Webhook échoué: {}".format(r), "red"))
-            # Broadcast nouvelle version désactivé au redémarrage (évite le spam)
-            # threading.Thread(target=broadcast_new_version, daemon=True).start()
+            # Broadcast nouvelle version à tous les membres
+            threading.Thread(target=broadcast_new_version, daemon=True).start()
             # Message de démarrage admin
             sn, sm, sl_l, wknd = get_session()
             sm_real = get_adaptive_score_min()
+            ch = chal_get()
             tg_send(ADMIN_ID,
-                "🎯 <b>@leaderOdg Bot — EN LIGNE !</b>\n\n"
+                "🤖 <b>AlphaBot PRO v20 — EN LIGNE !</b>\n\n"
                 "✅ DB initialisée\n"
                 "✅ Port {} ouvert\n"
                 "✅ Webhook configuré\n"
                 "🧠 IA Validator : {}  [mode: {}]\n\n"
-                "📊 Tendance : <b>H4</b>  ·  Entrée : <b>M15</b>\n"
                 "🕐 Session : <b>{}</b>  Score min : <b>{}</b>\n"
-                "📡 FREE {}/j  ·  PRO {}/j\n"
+                "🌍 Régime IA : <b>{}</b>\n"
+                "🏆 Challenge IA : <b>{:.2f}$</b> / 10 000$ objectif\n\n"
+                "📡 FREE {}/j  ·  PRO {}/j  (Qualité > Quantité)\n"
+                "⏱ Scan : toutes les 5 min\n"
                 "🛠 /admin pour le panel".format(
                     port,
                     ("✅ Claude" if CLAUDE_API_KEY else "⚠️ Sans Claude")
                     + (" + Gemini" if GEMINI_API_KEY else ""),
                     AI_VALIDATOR,
                     sl_l, sm_real,
-                    FREE_LIMIT, PRO_LIMIT),
+                    AI_REG.get("regime", "Init"),
+                    ch["balance"], FREE_LIMIT, PRO_LIMIT),
                 kb=kb_reply())
         threading.Thread(target=_init_bg, daemon=True).start()
         state = {"ls": 0, "la": 0, "lc": 0}
         def _loop():
-            log("INFO", clr("✅ SCANNER DÉMARRÉ", "b", "g"))
             while True:
                 try:
-                    now = time.time()
-                    if now - state["ls"] >= SCAN_SEC:
-                        state["ls"] = now
-                        threading.Thread(target=scan_and_send, daemon=True).start()
-                except Exception as e:
-                    log("ERR", "loop scan: {}".format(e))
-                    traceback.print_exc()
+                    now=time.time()
+                    # Scan toutes les 5 min — qualité maximale
+                    if now-state["ls"]>=SCAN_SEC: state["ls"]=now; threading.Thread(target=scan_and_send,daemon=True).start()
+                    if now-state["la"]>=300: state["la"]=now; threading.Thread(target=refresh_ai,daemon=True).start()
+                    if now-state["lc"]>=15: state["lc"]=now; threading.Thread(target=ai_check,daemon=True).start()
+                except Exception as e: log("ERR","loop: {}".format(e))
                 time.sleep(10)
         threading.Thread(target=_loop,daemon=True).start()
         def _ping():
@@ -8587,6 +7347,8 @@ def main():
         db_init()
         db_register(ADMIN_ID, "leaderOdg")
         db_pro(ADMIN_ID, "ADMIN_AUTO", days=None)
+        threading.Thread(target=refresh_exch, daemon=True).start()
+        threading.Thread(target=refresh_ai, daemon=True).start()
         tg_req("deleteWebhook",{"drop_pending_updates":"true"}); time.sleep(1)
         # Purge old updates
         offset=0
@@ -8595,8 +7357,8 @@ def main():
             if not batch: break
             offset=batch[-1]["update_id"]+1
         log("INFO", clr("Polling démarré (offset={})".format(offset), "g"))
-        # Broadcast désactivé au redémarrage
-        # threading.Thread(target=broadcast_new_version, daemon=True).start()
+        # Broadcast nouvelle version
+        threading.Thread(target=broadcast_new_version, daemon=True).start()
         ls=la=lc=0
         while True:
             try:
@@ -8609,9 +7371,12 @@ def main():
                     threading.Thread(target=process_update,args=(upd,),daemon=True).start()
                 now=time.time()
                 if now-ls>=SCAN_SEC: ls=now; threading.Thread(target=scan_and_send,daemon=True).start()
+                if now-la>=300: la=now; threading.Thread(target=refresh_ai,daemon=True).start()
+                if now-lc>=15: lc=now; threading.Thread(target=ai_check,daemon=True).start()
             except KeyboardInterrupt: tg_send(ADMIN_ID,"🛑 Bot arrêté."); break
             except Exception as e: log("ERR",str(e)); time.sleep(5)
 
 if __name__=="__main__":
     main()
+
 
