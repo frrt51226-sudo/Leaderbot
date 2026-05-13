@@ -24,7 +24,7 @@ AlphaBot PRO v21.2.0 — Agent IA Adaptatif + Validateur Dual-AI
     – pattern_score_m5 max +65 pts (vs +50 avant)
 • pip install requests anthropic google-generativeai
 """
-import json, ssl, time, threading, math, random, logging
+import json, ssl, time, threading, math, random, logging, traceback
 import urllib.request, urllib.parse, urllib.error, os
 from datetime import datetime, timedelta, timezone
 from queue import Queue, Empty
@@ -66,11 +66,6 @@ except ImportError as _amd_err:
     def fmt_signal_amd_vip(s, news, sl): return fmt_signal_pro(s, news, sl)
     AMD_PRIORITY_MARKETS = {}
 
-    _GEMINI_OK = True
-except ImportError:
-    _GEMINI_OK = False
-    print("[GeminiAI] ⚠️  pip install google-genai pour le fallback Gemini")
-
 # ══════════════════════════════════════════════════════
 #  CONFIG
 # ══════════════════════════════════════════════════════
@@ -100,6 +95,10 @@ MIN_GAP_BETWEEN   = 30  # minutes minimum entre 2 signaux consécutifs
 
 # Timestamp de démarrage — ignore les updates Telegram antérieurs
 _BOT_START_TIME   = time.time()
+
+# ── Anti-spam dispatch (cooldown par utilisateur par bouton) ─────
+_DISPATCH_CD: dict = {}
+_DISPATCH_CD_FALLBACK: dict = {}
 
 MARKETS = [
     {"sym":"GC=F",     "name":"XAUUSD","cat":"METALS","pip":0.01,  "max_sp":70,"vol":5,"crypto":False},
@@ -576,7 +575,7 @@ CTX = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 CTX.check_hostname = False; CTX.verify_mode = ssl.CERT_NONE
 CTX.set_ciphers("DEFAULT@SECLEVEL=0")
 TG = "https://api.telegram.org/bot{}/".format(TG_TOKEN)
-_tg_lock = threading.Lock()
+_tg_lock = threading.Semaphore(5)  # FIX v21.3: 5 envois simultanés (vs Lock bloquant tout)
 
 def http_get(url, timeout=15):
     hdrs = {"User-Agent":"Mozilla/5.0","Accept":"application/json"}
@@ -1672,6 +1671,208 @@ def pat_midnight_open(c, bias):
     return False
 
 
+# ══════════════════════════════════════════════════════════════════
+#  NOUVEAUX PATTERNS FOREX RÉCURRENTS v21.7
+#  London Breakout Retest | NY Reversal | Turtle Soup | OB+FVG Continuation
+# ══════════════════════════════════════════════════════════════════
+
+def pat_london_breakout_retest(c, bias):
+    """
+    London Breakout Retest — Setup Forex le plus récurrent.
+    Logique : Range Asiatique (0-7h UTC) → cassure London → retest → continuation.
+
+    BUY  : London casse le haut du range asiatique → retest du niveau → long
+    SELL : London casse le bas du range asiatique  → retest du niveau → short
+
+    Paires idéales : EURUSD, GBPUSD, GBPJPY, EURJPY
+    """
+    if not c or len(c) < 40: return False
+
+    # Uniquement en session London ou Overlap (7h-16h UTC)
+    h = datetime.now(timezone.utc).hour
+    if not (7 <= h < 16): return False
+
+    # Range asiatique : ~28 bougies M15 avant London, on exclut les 8 bougies récentes
+    lookback = min(36, len(c) - 2)
+    asian_c  = c[-(lookback):-8] if len(c) > 16 else c[:-2]
+    if len(asian_c) < 4: return False
+
+    asian_high  = max(x["h"] for x in asian_c)
+    asian_low   = min(x["l"] for x in asian_c)
+    asian_range = asian_high - asian_low
+    if asian_range <= 0: return False
+
+    last = c[-1]; prev = c[-2]; prev2 = c[-3]
+
+    if bias == "BULLISH":
+        # Cassure du Asian High par London (impulsion)
+        breakout = prev2["c"] > asian_high or prev["c"] > asian_high
+        # Retest : prix revient tester Asian High comme support
+        retest   = last["l"] <= asian_high * 1.001 and last["c"] > asian_high * 0.999
+        # Bougie de rejet haussier sur le niveau
+        reject   = last["c"] > last["o"] and last["l"] < asian_high * 1.002
+        return breakout and (retest or reject)
+
+    if bias == "BEARISH":
+        # Cassure du Asian Low par London
+        breakout = prev2["c"] < asian_low or prev["c"] < asian_low
+        # Retest : prix revient tester Asian Low comme résistance
+        retest   = last["h"] >= asian_low * 0.999 and last["c"] < asian_low * 1.001
+        reject   = last["c"] < last["o"] and last["h"] > asian_low * 0.998
+        return breakout and (retest or reject)
+
+    return False
+
+
+def pat_ny_reversal(c, bias):
+    """
+    NY Reversal ICT — Retournement New York après sweep London.
+    Logique : London prend la liquidité (sweep swing) → NY inverse avec CHoCH M5.
+
+    BUY  : London sweepé swing low → NY CHoCH haussier + displacement → long
+    SELL : London sweepé swing high → NY CHoCH baissier + displacement → short
+
+    Actif uniquement en session NY (12h-17h UTC).
+    Excellent sur : EURUSD, GBPUSD, XAUUSD
+    """
+    if not c or len(c) < 24: return False
+
+    # Uniquement en session NY
+    h = datetime.now(timezone.utc).hour
+    if not (12 <= h < 17): return False
+
+    # Zone London : ~24 bougies M15 avant NY (bougies -24 à -4)
+    london_c    = c[-24:-4] if len(c) >= 28 else c[:-4]
+    if len(london_c) < 4: return False
+
+    london_high = max(x["h"] for x in london_c)
+    london_low  = min(x["l"] for x in london_c)
+
+    last = c[-1]; prev = c[-2]; prev2 = c[-3]; prev3 = c[-4]
+
+    # Corps moyen pour détecter le displacement
+    avg_body = sum(abs(x["c"] - x["o"]) for x in c[-10:-1]) / 9 if len(c) >= 10 else 0
+
+    if bias == "BULLISH":
+        # London a sweepé un swing low
+        swept_low    = prev3["l"] < london_low or prev2["l"] < london_low
+        # CHoCH haussier NY : clôture au-dessus d'un high London récent
+        recent_high  = max(prev3["h"], prev2["h"], prev["h"])
+        choch        = last["c"] > recent_high and last["c"] > last["o"]
+        # Displacement : corps large (>130% corps moyen)
+        body_last    = abs(last["c"] - last["o"])
+        displacement = body_last > avg_body * 1.3 if avg_body > 0 else True
+        return swept_low and choch and displacement
+
+    if bias == "BEARISH":
+        # London a sweepé un swing high
+        swept_high   = prev3["h"] > london_high or prev2["h"] > london_high
+        recent_low   = min(prev3["l"], prev2["l"], prev["l"])
+        choch        = last["c"] < recent_low and last["c"] < last["o"]
+        body_last    = abs(last["c"] - last["o"])
+        displacement = body_last > avg_body * 1.3 if avg_body > 0 else True
+        return swept_high and choch and displacement
+
+    return False
+
+
+def pat_turtle_soup(c, bias):
+    """
+    Turtle Soup ICT — Faux breakout institutionnel sur swing M15 majeur.
+    Logique : cassure du swing récent → rejet violent → retour dans le range.
+
+    BUY  : cassure swing low M15 → rejet → clôture au-dessus du swing → long
+    SELL : cassure swing high M15 → rejet → clôture en dessous → short
+
+    Très bon sur : EURUSD, GBPJPY, XAUUSD
+    Différence avec fakeout_ict : spécifique aux swings majeurs, pas aux EQH/EQL.
+    """
+    if not c or len(c) < 15: return False
+
+    H, L    = swings(c[-15:], n=2)
+    last    = c[-1]; prev = c[-2]
+    b_last  = abs(last["c"] - last["o"])
+    b_prev  = abs(prev["c"] - prev["o"])
+    if b_prev == 0: return False
+
+    if bias == "BULLISH" and len(L) >= 2:
+        swing_low  = min(L[-1][1], L[-2][1])
+        # prev a cassé sous le swing low (manipulation / stop hunt)
+        broke_low  = prev["l"] < swing_low
+        # last clôture au-dessus du swing low (Turtle Soup confirmé)
+        rejected   = last["c"] > swing_low and last["c"] > last["o"]
+        # Corps de retour englobant
+        engulf     = b_last >= b_prev * 1.1
+        return broke_low and rejected and engulf
+
+    if bias == "BEARISH" and len(H) >= 2:
+        swing_high  = max(H[-1][1], H[-2][1])
+        broke_high  = prev["h"] > swing_high
+        rejected    = last["c"] < swing_high and last["c"] < last["o"]
+        engulf      = b_last >= b_prev * 1.1
+        return broke_high and rejected and engulf
+
+    return False
+
+
+def pat_ob_fvg_continuation(c, bias):
+    """
+    OB + FVG Trend Continuation — Setup de continuation institutionnel.
+    Logique : BOS confirmé → pullback vers zone OB/FVG → continuation tendance.
+
+    BUY  : BOS haussier → pullback → FVG/OB zone → rebond → continuation long
+    SELL : BOS baissier → pullback → FVG/OB zone → rebond → continuation short
+
+    C'est le setup le plus fréquent en Forex tendanciel (EURUSD, USDJPY, GBPUSD).
+    Important pour équilibrer les setups reversal avec des setups de continuation.
+    """
+    if not c or len(c) < 20: return False
+
+    H, L  = swings(c[-20:], n=3)
+    last  = c[-1]; prev = c[-2]
+
+    if bias == "BULLISH":
+        if len(H) < 2: return False
+        # BOS : swing high précédent cassé
+        bos_level = H[-2][1]
+        bos_ok    = any(x["c"] > bos_level for x in c[-10:])
+        if not bos_ok: return False
+
+        # Pullback : prix revient dans la zone du BOS (±0.5%)
+        in_pullback = bos_level * 0.995 <= last["c"] <= bos_level * 1.002
+
+        # FVG haussier dans les 8 dernières bougies
+        fvg_ok = any(
+            c[i]["h"] < c[i+2]["l"]
+            for i in range(max(0, len(c)-8), len(c)-2)
+        )
+
+        # Confirmation : bougie haussière qui clôture au-dessus du prev high
+        confirm = last["c"] > last["o"] and last["c"] > prev["h"]
+
+        return bos_ok and (in_pullback or fvg_ok) and confirm
+
+    if bias == "BEARISH":
+        if len(L) < 2: return False
+        bos_level = L[-2][1]
+        bos_ok    = any(x["c"] < bos_level for x in c[-10:])
+        if not bos_ok: return False
+
+        in_pullback = bos_level * 0.998 <= last["c"] <= bos_level * 1.005
+
+        # FVG baissier
+        fvg_ok = any(
+            c[i]["l"] > c[i+2]["h"]
+            for i in range(max(0, len(c)-8), len(c)-2)
+        )
+
+        confirm = last["c"] < last["o"] and last["c"] < prev["l"]
+
+        return bos_ok and (in_pullback or fvg_ok) and confirm
+
+    return False
+
+
 def pattern_score_m5(c, bias):
     """
     Calcule le bonus de score total des patterns M5.
@@ -1719,6 +1920,19 @@ def pattern_score_m5(c, bias):
     if pat_midnight_open(c, bias):
         score += 15
         badges.append("Midnight Open ✓")
+    # ── PATTERNS FOREX RÉCURRENTS v21.7 ───────────────────────────
+    if pat_london_breakout_retest(c, bias):
+        score += 18
+        badges.append("London BRK ✓")
+    if pat_ny_reversal(c, bias):
+        score += 16
+        badges.append("NY Reversal ✓")
+    if pat_turtle_soup(c, bias):
+        score += 17
+        badges.append("Turtle Soup ✓")
+    if pat_ob_fvg_continuation(c, bias):
+        score += 15
+        badges.append("OB+FVG Cont ✓")
     return min(score, 95), badges
 
 # ══════════════════════════════════════════════════════
@@ -2813,8 +3027,10 @@ def agent_analyze(m, score_min, news_ok, q):
                    "sc": sc, "s_min": s_min, "m5_ok": m5_conf["ok"]})
 
     except Exception as ex:
+        traceback.print_exc()
+        log("ERR", "agent_analyze [{}]: {}".format(m["name"], str(ex)))
         q.put({"name": m["name"], "cat": m["cat"], "found": False,
-               "reason": str(ex)[:40], "improv": False})
+               "reason": str(ex)[:80], "improv": False})
 
 # ══════════════════════════════════════════════════════════════════
 #  BINANCE IA (Crypto futures)
@@ -7207,6 +7423,14 @@ def run_backtest(uid, nb_candles=150, tf="1h", score_min=72):
 def dispatch(uid, uname, txt):
     """Dispatcher principal — gère boutons clavier ET commandes slash."""
     t = txt.strip()
+
+    # ── Cooldown 2s par bouton/utilisateur (anti double-clic) ────────
+    if not t.startswith("/"):
+        _cd_key = "{}:{}".format(uid, t)
+        _now = time.time()
+        if _DISPATCH_CD.get(_cd_key, 0) + 2.0 > _now:
+            return
+        _DISPATCH_CD[_cd_key] = _now
     # ── /start géré EN PREMIER pour préserver ref_by ─────────────────
     _p0 = t.split()
     _c0 = _p0[0].lower().lstrip("/").split("@")[0] if _p0 else ""
@@ -7357,8 +7581,11 @@ def dispatch(uid, uname, txt):
             from alphabot_payment_manager import cmd_degrade_manual
             cmd_degrade_manual(uid, arg); return
 
-    # ── Fallback : afficher le menu ───────────────────────────────
-    send_welcome(uid, uname)
+    # ── Fallback : afficher le menu (cooldown 10s anti-flood) ───────
+    _fb_now = time.time()
+    if _DISPATCH_CD_FALLBACK.get(uid, 0) + 10.0 < _fb_now:
+        _DISPATCH_CD_FALLBACK[uid] = _fb_now
+        send_welcome(uid, uname)
 
 
 def dispatch_cb(cb):
@@ -7655,7 +7882,9 @@ def process_update(upd):
         if "message" in upd:
             upd_date = upd["message"].get("date", 0)
         elif "callback_query" in upd:
-            upd_date = upd["callback_query"].get("message", {}).get("date", 0)
+            # FIX v21.3: callback_query.message.date = date du message ORIGINAL
+            # pas du clic → on ne filtre pas les callbacks pour éviter de les ignorer
+            upd_date = time.time()
         if upd_date and upd_date < (_BOT_START_TIME - 10):
             return  # update trop ancien → ignoré silencieusement
         # ── Nouveau membre dans le groupe ────────────────────────
@@ -8112,11 +8341,16 @@ def main():
         threading.Thread(target=_init_bg, daemon=True).start()
         state = {"ls": 0, "la": 0, "lc": 0}
         def _loop():
+            log("INFO", clr("✅ SCANNER DÉMARRÉ", "b", "g"))
             while True:
                 try:
-                    now=time.time()
-                    if now-state["ls"]>=SCAN_SEC: state["ls"]=now; threading.Thread(target=scan_and_send,daemon=True).start()
-                except Exception as e: log("ERR","loop: {}".format(e))
+                    now = time.time()
+                    if now - state["ls"] >= SCAN_SEC:
+                        state["ls"] = now
+                        threading.Thread(target=scan_and_send, daemon=True).start()
+                except Exception as e:
+                    log("ERR", "loop scan: {}".format(e))
+                    traceback.print_exc()
                 time.sleep(10)
         threading.Thread(target=_loop,daemon=True).start()
         def _ping():
