@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """
 AlphaBot PRO v21.2.0 — Agent IA Adaptatif + Validateur Dual-AI
@@ -82,7 +83,7 @@ DB_FILE      = "ab10.db"
 FREE_GROUP_LINK = os.getenv("FREE_GROUP_LINK", "https://t.me/+rSKqzhPLEARiMmQ0")
 VIP_GROUP_LINK  = os.getenv("VIP_GROUP_LINK",  "https://t.me/+PRr8bpHnr8s4ZGNk")
 
-PRO_PRICE  = 10;  REF_TARGET = 20;  REF_MONTHS = 3
+PRO_PRICE  = 10;  VIP_PRICE  = 20;  REF_TARGET = 20;  REF_MONTHS = 3
 FREE_LIMIT = 1;   PRO_LIMIT  = 10;  NB_AGENTS  = 20
 TRIAL_DAYS = 3;   SCAN_SEC   = 60;  DATA_MAX_AGE = 30
 DAILY_HOUR = 22;  WEEKLY_DAY = 6;   WEEKLY_HOUR = 21
@@ -1009,6 +1010,130 @@ from alphabot_pg import (
 )
 
 log("INFO", clr("DB v10 OK (backend: {})".format("PostgreSQL" if _USE_PG else "SQLite"), "b", "g"))
+
+# ══════════════════════════════════════════════════════════════════
+#  WRAPPERS DE COMPATIBILITÉ v21.3 — Normalise les retours de alphabot_pg
+#  Problèmes connus :
+#    1. daily_stats()   → clés "sig_count"/"total_g001"/"total_g1" au lieu de "n"/"g001"/"g1"
+#    2. get_pro_info()  → retourne 9 valeurs au lieu de 3
+#    3. get_refs()      → retourne une liste au lieu d'un int
+# ══════════════════════════════════════════════════════════════════
+_daily_stats_raw   = daily_stats
+_weekly_stats_raw  = weekly_stats
+_get_pro_info_raw  = get_pro_info
+_get_refs_raw      = get_refs
+
+def _safe_row(row, n):
+    """Pad ou tronque une row DB à exactement n champs."""
+    r = list(row)
+    while len(r) < n:
+        r.append("NORMAL" if len(r) in (8, 9) else 0)
+    return tuple(r[:n])
+
+def daily_stats(date_str=None):
+    """Wrapper normalisé — garantit toutes les clés attendues."""
+    try:
+        st = _daily_stats_raw() if date_str is None else _daily_stats_raw(date_str)
+    except TypeError:
+        st = _daily_stats_raw()
+    if st is None:
+        st = {}
+    # Clés numériques obligatoires
+    if "n" not in st:
+        st["n"] = st.get("sig_count", st.get("count", 0))
+    if "g001" not in st:
+        st["g001"] = st.get("total_g001", st.get("gain_001", 0))
+    if "g1" not in st:
+        st["g1"] = st.get("total_g1", st.get("gain_1", 0))
+    if "wins" not in st:
+        st["wins"] = 0
+    if "losses" not in st:
+        st["losses"] = max(0, st["n"] - st["wins"])
+    if "open" not in st:
+        st["open"] = 0
+    if "pot_g001" not in st:
+        st["pot_g001"] = st.get("potential_g001", st["g001"])
+    if "pot_g1" not in st:
+        st["pot_g1"] = st.get("potential_g1", st["g1"])
+    if "date" not in st:
+        from datetime import datetime
+        st["date"] = datetime.now().strftime("%Y-%m-%d")
+    if "rows" not in st:
+        st["rows"] = []
+    # Les rows restent en longueur originale — les fonctions utilisent _safe_row
+    return st
+
+def weekly_stats():
+    """Wrapper normalisé — mêmes clés que daily_stats."""
+    try:
+        st = _weekly_stats_raw()
+    except Exception:
+        st = {}
+    if st is None:
+        st = {}
+    if "n" not in st:
+        st["n"] = st.get("sig_count", st.get("count", 0))
+    if "g001" not in st:
+        st["g001"] = st.get("total_g001", st.get("gain_001", 0))
+    if "g1" not in st:
+        st["g1"] = st.get("total_g1", st.get("gain_1", 0))
+    if "wins" not in st:
+        st["wins"] = 0
+    if "losses" not in st:
+        st["losses"] = max(0, st["n"] - st["wins"])
+    if "rows" not in st:
+        st["rows"] = []
+    if "week_start" not in st:
+        from datetime import datetime, timedelta
+        st["week_start"] = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    return st
+
+def get_pro_info(uid):
+    """Wrapper — retourne toujours exactement (plan, expires, source)."""
+    try:
+        result = _get_pro_info_raw(uid)
+        if result is None:
+            return ("FREE", None, None)
+        if isinstance(result, (list, tuple)):
+            r = list(result)
+            plan    = r[0] if len(r) > 0 else "FREE"
+            expires = r[1] if len(r) > 1 else None
+            source  = r[2] if len(r) > 2 else None
+            return (plan, expires, source)
+        return ("FREE", None, None)
+    except Exception as _e:
+        log("WARN", "get_pro_info wrapper: {}".format(_e))
+        return ("FREE", None, None)
+
+def get_refs(uid):
+    """Wrapper — retourne toujours un int (nombre de filleuls)."""
+    try:
+        result = _get_refs_raw(uid)
+        if isinstance(result, (list, tuple)):
+            return len(result)
+        if isinstance(result, int):
+            return result
+        return int(result) if result else 0
+    except Exception:
+        return 0
+
+_global_stats_raw = global_stats
+
+def global_stats():
+    """Wrapper — retourne toujours exactement (total, pro, sigs, pays, g1d)."""
+    try:
+        result = _global_stats_raw()
+        if result is None:
+            return (0, 0, 0, 0, 0.0)
+        r = list(result)
+        while len(r) < 5:
+            r.append(0)
+        return tuple(r[:5])
+    except Exception as _e:
+        log("WARN", "global_stats wrapper: {}".format(_e))
+        return (0, 0, 0, 0, 0.0)
+
+log("INFO", clr("Wrappers DB v21.3 OK", "b", "g"))
 
 def setup_key(sig):
     """
@@ -3415,7 +3540,7 @@ def fmt_daily(st, is_pro=True):
         ]
         total_001 = 0.0
         for row in st["rows"]:
-            pair, side, rr, g001, g1, l001, l1, sess, mode, result = row
+            pair, side, rr, g001, g1, l001, l1, sess, mode, result = _safe_row(row, 10)
             d = "⬆️" if side == "BUY" else "⬇️"
             if result == "TP":
                 icon = "✅"; detail = f"<b>+${g001:.2f}</b> (lot 0.01)  /  <b>+${g1:.0f}</b> (lot 1)"
@@ -4062,7 +4187,7 @@ def verify_tx(tx):
 
 def handle_pay_submitted(uid, uname, plan_key="PRO"):
     _pay_state[uid]={"tx":None,"step":"waiting","plan":plan_key}
-    price = {"FREE":0,"STARTER":5,"PRO":10,"VIP":25}.get(plan_key, PRO_PRICE)
+    price = {"FREE":0,"STARTER":5,"PRO":PRO_PRICE,"VIP":VIP_PRICE}.get(plan_key, PRO_PRICE)
     tg_send(uid,
         "📋 <b>COLLE TON TX HASH</b>\n\n"
         "Plan: <b>{}</b> — {}$ USDT TRC20\n\n"
@@ -4090,7 +4215,17 @@ def handle_pay_confirm(uid,uname):
             if ok:
                 db_pro(uid,"USDT_AUTO",days=None); tg_sticker(uid,STK_WIN)
                 tg_send(ADMIN_ID,"🟢 AUTO PRO: @{} <code>{}</code> {}$ ✅".format(uname or "?",uid,amt))
-                log("PAY",clr("AUTO PRO: @{} {}$".format(uname,amt),"g")); return
+                log("PAY",clr("AUTO PRO: @{} {}$".format(uname,amt),"g"))
+                # ── Accès groupe VIP selon le montant payé ───────────
+                if amt >= VIP_PRICE:
+                    _send_vip_link_auto(uid, "Paiement {}$ USDT".format(round(amt, 2)))
+                else:
+                    tg_send(ADMIN_ID,
+                        "⚠️ <b>AJOUT VIP MANUEL REQUIS</b>\n"
+                        "@{} <code>{}</code>  a payé <b>{}$</b>\n\n"
+                        "👉 Ajoute-le manuellement au groupe VIP.".format(
+                            uname or "?", uid, round(amt, 2)))
+                return
             if i<2: log("INFO",clr("TX non confirmé {}/3".format(i+1),"y"))
         tg_send(uid,"⏳ <b>En attente</b>\n\nL'admin activera sous 30 min.\n@leaderOdg"); tg_send(ADMIN_ID,"⚠️ MANUELLE\n@{} <code>{}</code>\n<code>{}</code>\n/activate {}".format(uname or "?",uid,tx,uid))
     threading.Thread(target=_v,daemon=True).start()
@@ -4331,6 +4466,17 @@ def _auto_verify_and_activate(uid, uname, tx_hash):
             tg_send(ADMIN_ID,
                 "\U0001f7e2 <b>AUTO PRO OK</b> : @{} <code>{}</code>  {}$ \u2705".format(
                     uname or "?", uid, amount))
+            # ── Accès groupe VIP selon le montant payé ────────────────
+            if amount >= VIP_PRICE:
+                # 20$ USDT → lien VIP envoyé automatiquement
+                _send_vip_link_auto(uid, "Paiement {}$ USDT".format(round(amount, 2)))
+            else:
+                # 10$ via lien de parrainage → admin ajoute manuellement
+                tg_send(ADMIN_ID,
+                    "⚠️ <b>AJOUT VIP MANUEL REQUIS</b>\n"
+                    "@{} <code>{}</code>  a payé <b>{}$</b>\n\n"
+                    "👉 Ajoute-le manuellement au groupe VIP.".format(
+                        uname or "?", uid, round(amount, 2)))
             log("PAY", clr("AUTO PRO: @{} {} — {}$".format(uname, uid, amount), "green"))
             return
         elif i < len(delays) - 1:
@@ -6198,6 +6344,28 @@ def handle_testpro(uid):
     send_account(uid, "leaderOdg", forced_plan="PRO")
 
 
+def _send_vip_link_auto(uid, reason="paiement"):
+    """
+    Envoie automatiquement le lien du groupe VIP à l'utilisateur.
+    Appelé après paiement 20$ USDT ou après 20 filleuls atteints.
+    """
+    try:
+        tg_send(uid,
+            "👑 <b>ACCÈS GROUPE VIP DÉBLOQUÉ !</b>\n\n"
+            "✅ Raison : <b>{}</b>\n\n"
+            "🔗 Clique ci-dessous pour rejoindre le groupe VIP :\n\n"
+            "⚡ Signaux premium, analyses avancées, support prioritaire.".format(reason),
+            kb={"inline_keyboard": [[
+                {"text": "👑 Rejoindre le Groupe VIP", "url": VIP_GROUP_LINK}
+            ]]})
+        tg_send(ADMIN_ID,
+            "✅ <b>LIEN VIP AUTO ENVOYÉ</b>\n"
+            "User : <code>{}</code>  Raison : {}".format(uid, reason))
+        log("INFO", clr("VIP auto-link envoyé à {} — {}".format(uid, reason), "g"))
+    except Exception as e:
+        log("WARN", "send_vip_link_auto: {}".format(e))
+
+
 def handle_txhash(uid, uname, tx_hash):
     db_save_payment(uid, tx_hash)
     tg_send(uid,
@@ -6226,6 +6394,17 @@ def handle_txhash(uid, uname, tx_hash):
             tg_send(ADMIN_ID,
                 "\U0001f7e2 <b>AUTO PRO OK</b>: @{} <code>{}</code>  {}$ \u2705".format(
                     uname or "?", uid, amount))
+            # ── Accès groupe VIP selon le montant payé ────────────────
+            if amount >= VIP_PRICE:
+                # 20$ USDT → lien VIP envoyé automatiquement
+                _send_vip_link_auto(uid, "Paiement {}$ USDT".format(round(amount, 2)))
+            else:
+                # 10$ via lien de parrainage → admin ajoute manuellement
+                tg_send(ADMIN_ID,
+                    "⚠️ <b>AJOUT VIP MANUEL REQUIS</b>\n"
+                    "@{} <code>{}</code>  a payé <b>{}$</b>\n\n"
+                    "👉 Ajoute-le manuellement au groupe VIP.".format(
+                        uname or "?", uid, round(amount, 2)))
             log("PAY", clr("AUTO PRO: @{} {} — {}$".format(uname, uid, amount), "green"))
             return
         elif i < len(delays) - 1:
@@ -6531,7 +6710,7 @@ def send_pro(uid):
         "  \u2022 Tout PRO +\n"
         "  \u2022 Accès prioritaire aux meilleurs setups\n"
         "  \u2022 Support direct @leaderOdg\n"
-        "  \u2022 <b>25$ USDT/mois</b>\n\n" +
+        "  \u2022 <b>{}$ USDT/mois</b>\n\n".format(VIP_PRICE) +
         "\u2501" * 22 + "\n"
         "\U0001f91d <b>Parrainage GRATUIT</b>\n"
         "{} filleuls = {} mois PRO (renouvelable)\n"
@@ -6540,8 +6719,8 @@ def send_pro(uid):
             REF_TARGET, REF_MONTHS, refs, REF_TARGET),
         kb={"inline_keyboard": [
             [{"text": "🚀 STARTER — 5$/mois",  "callback_data": "pay_plan_STARTER"}],
-            [{"text": "💠 PRO — 10$/mois",      "callback_data": "pay_plan_PRO"}],
-            [{"text": "👑 VIP — 25$/mois",      "callback_data": "pay_plan_VIP"}],
+            [{"text": "💠 PRO — {}$/mois".format(PRO_PRICE),      "callback_data": "pay_plan_PRO"}],
+            [{"text": "👑 VIP — {}$/mois".format(VIP_PRICE),      "callback_data": "pay_plan_VIP"}],
             [{"text": "🤝 Parrainage gratuit",   "callback_data": "ref"}],
         ]})
 
@@ -6603,8 +6782,8 @@ def kb_reply():
 def kb_pro_plans():
     return {"inline_keyboard":[
         [{"text":"🚀 STARTER — 5$/mois",  "callback_data":"pay_plan_STARTER"}],
-        [{"text":"💠 PRO — 10$/mois",     "callback_data":"pay_plan_PRO"}],
-        [{"text":"👑 VIP — 25$/mois",     "callback_data":"pay_plan_VIP"}],
+        [{"text":"💠 PRO — {}$/mois".format(PRO_PRICE),     "callback_data":"pay_plan_PRO"}],
+        [{"text":"👑 VIP — {}$/mois".format(VIP_PRICE),     "callback_data":"pay_plan_VIP"}],
         [{"text":"🤝 Parrainage gratuit", "callback_data":"ref"}],
     ]}
 
@@ -6615,6 +6794,17 @@ def kb_admin_back(): return {"inline_keyboard":[[{"text":"◀️ Panel Admin","c
 # ══════════════════════════════════════════════════════
 def send_welcome(uid, uname, ref_by=0):
     db_register(uid, uname, ref_by, tg_fn=tg_send)
+    # ── Vérifier si le parrain atteint exactement 20 filleuls → VIP auto ─
+    if ref_by and ref_by != uid:
+        try:
+            ref_count = get_refs(ref_by)
+            if ref_count == REF_TARGET:
+                # Exactement 20 filleuls atteints → activer PRO + envoyer lien VIP
+                if not is_pro(ref_by):
+                    db_activate_pro(ref_by, "REF_AUTO", days=None)
+                _send_vip_link_auto(ref_by, "🏆 {} filleuls parrainés !".format(ref_count))
+        except Exception as _re:
+            log("WARN", "ref VIP check: {}".format(_re))
     p = is_pro(uid); sn, sm, sl_l, wknd = get_session()
     sm = get_adaptive_score_min()
     name_str = "@" + uname if uname else "Trader"
@@ -6698,7 +6888,7 @@ def send_signals_info(uid):
     if rows:
         lines.append("📋 <b>Signaux envoyés :</b>"); lines.append("")
         for row in rows:
-            pair,side,rr,g001,g1,l001,l1,sess,mode = row
+            pair,side,rr,g001,g1,l001,l1,sess,mode = _safe_row(row, 9)
             arrow = "⬆️" if side=="BUY" else "⬇️"
             icon = "✅" if rr>=2.5 else "⚪"
             gain = "+${:.0f}".format(g1) if rr>=2.5 else "---"
@@ -6739,7 +6929,7 @@ def send_pro_page(uid):
         "  • <b>10$ USDT/mois</b>\n\n"
         "👑 <b>VIP</b>  —  Signaux illimités\n"
         "  • Tout PRO + Support @leaderOdg\n"
-        "  • <b>25$ USDT/mois</b>\n\n"
+        "  • <b>{}$ USDT/mois</b>\n\n".format(VIP_PRICE) +
         "━"*22+"\n"
         "🤝 <b>Parrainage GRATUIT</b>\n"
         "{} filleuls = {} mois PRO (renouvelable)\n"
@@ -6749,7 +6939,7 @@ def send_pro_page(uid):
 
 def send_pay_plan(uid, plan_key="PRO"):
     plans = {"FREE":{"price":0,"label":"FREE"},"STARTER":{"price":5,"label":"STARTER"},
-             "PRO":{"price":10,"label":"PRO"},"VIP":{"price":25,"label":"VIP"}}
+             "PRO":{"price":PRO_PRICE,"label":"PRO"},"VIP":{"price":VIP_PRICE,"label":"VIP"}}
     plan = plans.get(plan_key, plans["PRO"])
     price = plan["price"]; label = plan["label"]
     sep = "━"*22
@@ -6776,7 +6966,7 @@ def send_mes_gains(uid):
     if not st["n"]: tg_send(uid,"💸 <b>MES GAINS</b>\n\nAucun signal aujourd\'hui.",kb=kb_back()); return
     lines = ["💸 <b>GAINS DU JOUR</b>","═"*22,""]
     for row in st["rows"]:
-        pair,side,rr,g001,g1,l001,l1,sess,mode = row
+        pair,side,rr,g001,g1,l001,l1,sess,mode = _safe_row(row, 9)
         ok=rr>=2.5; icon="✅" if ok else "❌"; d="⬆️" if side=="BUY" else "⬇️"
         tag=" ⚡" if mode!="NORMAL" else ""
         lines.append("{} <b>{}</b>{} {} {}  RR 1:{}".format(icon,pair,tag,d,side,rr))
@@ -6789,32 +6979,56 @@ def send_mes_gains(uid):
               "<i>Estimation TP atteint. Pas un conseil financier.</i>"]
     tg_send(uid,"\n".join(lines),kb=kb_back())
 
+# Alias pour le callback "gains"
+send_gains = send_mes_gains
+
 def send_affilie(uid, uname):
-    refs=get_refs(uid); link="https://t.me/{}?start={}".format(BOT_USER,uid)
-    done=min(refs,REF_TARGET); pct=int(done/REF_TARGET*100)
-    fill=int(done/REF_TARGET*12); bar="🟩"*fill+"⬛"*(12-fill)
-    tg_send(uid,
-        ("📋 <b>COPIE CE MESSAGE ET ENVOIE À TES AMIS :</b>\n\n"+"━"*22+"\n\n"
+    refs = get_refs(uid)
+    link = "https://t.me/{}?start={}".format(BOT_USER, uid)
+    done = min(refs, REF_TARGET); pct = int(done / REF_TARGET * 100)
+    fill = int(done / REF_TARGET * 12); bar = "🟩" * fill + "⬛" * (12 - fill)
+
+    # ── Message 1 : texte à partager + bouton de partage cliquable ──
+    share_text = (
         "🤖 <b>AlphaBot PRO</b> — Signaux trading GRATUITS !\n\n"
         "📡 <b>Forex, Or, BTC, Indices...</b>\n"
         "🎯 Entrées directes avec SL & TP automatiques\n"
-        "💰 Jusqu\'à <b>+$500+ par signal</b> (lot 1.00)\n"
+        "💰 Jusqu'à <b>+$500+ par signal</b> (lot 1.00)\n"
         "📊 Analyse ICT/SMC\n\n"
-        "✅ <b>Gratuit</b> — signaux/jour\n"
-        "💠 <b>PRO seulement 10$</b> — 10 signaux/jour\n\n"
-        "👉 <b>Clique ici :</b>\n<code>{}</code>\n\n"+"━"*22).format(link),
-        kb={"inline_keyboard":[[{"text":"🤝 Voir mes filleuls","callback_data":"ref_stats"}]]})
-    rew = ("🏆 {} mois PRO actif ! Re-parraine pour renouveler !".format(REF_MONTHS) if refs>=REF_TARGET
-           else "🔥 Plus que {} de plus → {} mois PRO !".format(REF_TARGET-refs,REF_MONTHS) if refs>=20
-           else "👋 {} filleuls pour l\'instant. Continue !".format(refs))
+        "✅ <b>Gratuit</b> — {} signal/jour\n"
+        "💠 <b>PRO seulement 10$</b> — {} signaux/jour\n\n"
+        "👉 Rejoins via mon lien :\n"
+        "<code>{}</code>"
+    ).format(FREE_LIMIT, PRO_LIMIT, link)
+
+    tg_send(uid, share_text,
+        kb={"inline_keyboard": [
+            [{"text": "🚀 Partager mon lien de parrainage", "url": "https://t.me/share/url?url={}&text=Rejoins+AlphaBot+PRO+gratuitement+!".format(link)}],
+            [{"text": "👥 Voir mes filleuls", "callback_data": "ref_stats"}],
+            [{"text": "◀️ Retour", "callback_data": "start"}],
+        ]})
+
+    # ── Message 2 : tableau de bord filleuls ──────────────────────
+    if refs >= REF_TARGET:
+        rew = "🏆 {} mois PRO actif ! Re-parraine pour renouveler !".format(REF_MONTHS)
+    elif refs >= REF_TARGET // 2:
+        rew = "🔥 Plus que {} filleuls → {} mois PRO !".format(REF_TARGET - refs, REF_MONTHS)
+    else:
+        rew = "👋 {} filleuls pour l'instant. Continue !".format(refs)
+
     tg_send(uid,
-        "🤝 <b>MES FILLEULS</b>\n"+"═"*22+"\n\n"
+        "🤝 <b>MES FILLEULS</b>\n" + "═" * 22 + "\n\n"
         "<b>{}/{}</b>  ({}%)\n{}\n\n"
         "{}\n\n"
-        "🏆 {} filleuls = <b>{} MOIS PRO GRATUIT</b>\n"
-        "✅ <b>Activation automatique</b> dès {} atteints".format(
-            done,REF_TARGET,pct,bar,rew,REF_TARGET,REF_MONTHS,REF_TARGET),
-        kb=kb_back())
+        "🏆 <b>{} filleuls</b> = {} MOIS PRO GRATUIT\n"
+        "✅ Activation automatique dès {} atteints\n\n"
+        "👑 <b>20 filleuls</b> = Accès Groupe VIP automatique !".format(
+            done, REF_TARGET, pct, bar, rew,
+            REF_TARGET, REF_MONTHS, REF_TARGET),
+        kb={"inline_keyboard": [
+            [{"text": "🚀 Partager mon lien", "url": "https://t.me/share/url?url={}&text=Rejoins+AlphaBot+PRO+gratuitement+!".format(link)}],
+            [{"text": "◀️ Retour", "callback_data": "start"}],
+        ]})
 
 # ══════════════════════════════════════════════════════
 #  ADMIN COMPLET
@@ -7086,7 +7300,7 @@ def _build_promo(pid):
     if not st["n"]: return None
     lines=["📊 <b>RÉSULTATS D\'AUJOURD\'HUI</b>\n"]
     for row in st["rows"]:
-        pair,side,rr,g001,g1,l001,l1,sess,mode=row
+        pair,side,rr,g001,g1,l001,l1,sess,mode=_safe_row(row, 9)
         ok=rr>=2.5; icon="🟢" if ok else "🔴"; d="ACHAT" if side=="BUY" else "VENTE"
         res="✅ TP → <b>+${:.0f}</b>".format(g1) if ok else "❌ SL → <b>-${:.0f}</b>".format(l1)
         lines.append("{} <b>{}</b> {}  {} (lot 0.01)".format(icon,pair,d,res))
@@ -8400,5 +8614,4 @@ def main():
 
 if __name__=="__main__":
     main()
-
 
