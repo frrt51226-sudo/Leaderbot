@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """
 AlphaBot PRO v21.2.0 — Agent IA Adaptatif + Validateur Dual-AI
@@ -5,7 +6,7 @@ AlphaBot PRO v21.2.0 — Agent IA Adaptatif + Validateur Dual-AI
 • Bot Telegram FREE/PRO/VIP + paiement USDT auto
 • 20 marchés Forex/Métaux/Crypto/Indices/Pétrole
 • Cerveau ICT/SMC v2 + Analyse Multi-Timeframe
-• Tendance de fond : H1 (interne) | Entrée : M5 max M15
+• Tendance de fond : H4 (interne) | Entrée : M5 max M15
 • Si pas de setup parfait → l'agent allège les critères
   si tendance de fond + session + broker sont valides
 • ✨ NEW v19 : Validateur Dual-AI (Claude + Gemini)
@@ -74,21 +75,21 @@ except ImportError:
 # ══════════════════════════════════════════════════════
 #  CONFIG
 # ══════════════════════════════════════════════════════
-TG_TOKEN     = os.getenv("TG_TOKEN",  "6950706659:AAGXw-27ebhWLm2HfG7lzC7EckpwCPS_JFg")
+TG_TOKEN     = os.getenv("TG_TOKEN",  "6950706659:AAEELRFkJy1N2Rn61qQTnY1ZCbU8xaNMOIs")
 BOT_USER     = "leaderodg_bot"
-CHANNEL_ID   = os.getenv("TG_GROUP", "-1003757467015")
-VIP_CH       = os.getenv("TG_VIP",   "-1003771736496")
+CHANNEL_ID   = os.getenv("TG_GROUP", "-1002335466840")
+VIP_CH       = os.getenv("TG_VIP",   "-5281258868")
 ADMIN_ID     = int(os.getenv("ADMIN_ID", "6982051442"))
 USDT_ADDR    = "TJuPBihvzgb6ffGLw4WnqC33Av38kwU7XE"
 BROKER_LINK  = "https://one.exnessonelink.com/a/nb3fx0bpnm"
 DB_FILE      = "ab10.db"
 
 # ── Liens d'invitation groupes (à mettre à jour si lien change) ─
-FREE_GROUP_LINK = os.getenv("FREE_GROUP_LINK", "https://t.me/+alphabotfree")   # ← remplace par ton vrai lien groupe FREE
-VIP_GROUP_LINK  = os.getenv("VIP_GROUP_LINK",  "https://t.me/+alphabotvip")    # ← remplace par ton vrai lien groupe VIP
+FREE_GROUP_LINK = os.getenv("FREE_GROUP_LINK", "https://t.me/+rSKqzhPLEARiMmQ0")
+VIP_GROUP_LINK  = os.getenv("VIP_GROUP_LINK",  "https://t.me/+PRr8bpHnr8s4ZGNk")
 
 PRO_PRICE  = 10;  REF_TARGET = 20;  REF_MONTHS = 3
-FREE_LIMIT = 3;   PRO_LIMIT  = 10;  NB_AGENTS  = 20
+FREE_LIMIT = 1;   PRO_LIMIT  = 10;  NB_AGENTS  = 20
 TRIAL_DAYS = 3;   SCAN_SEC   = 60;  DATA_MAX_AGE = 30
 DAILY_HOUR = 22;  WEEKLY_DAY = 6;   WEEKLY_HOUR = 21
 SIGNAL_CUTOFF_HOUR = 22   # Aucun signal envoyé à partir de 22h00 UTC
@@ -481,21 +482,36 @@ def fmt_ai_block(ai: dict) -> str:
 # ══════════════════════════════════════════════════════
 
 # Priorité par paire (bonus score)
+# ══════════════════════════════════════════════════════
+#  PRIORITÉ MARCHÉS — Gold + BTC = TIER 1 ABSOLU
+#  Tous les setups actifs sur Tier 1
+#  Autres marchés : Breaker Block + setups majeurs seulement
+# ══════════════════════════════════════════════════════
 MARKET_PRIORITY = {
-    "XAUUSD": 20,   # 🥇 GOLD — PRIORITÉ ABSOLUE AMD
-    "BTCUSD": 18,   # ₿  BTC  — PRIORITÉ ABSOLUE AMD
-    "GBPJPY": 12,   # ultra volatile → setup premium
-    "NAS100": 11,   # nasdaq → sessions US
-    "XAGUSD": 10,   # silver → suit le gold
+    # ── TIER 1 : Priorité absolue — TOUS les setups ──────────
+    "XAUUSD": 30,   # 🥇 GOLD — leader, liquidité maximale
+    "BTCUSD": 28,   # ₿  BTC  — crypto phare
+    # ── TIER 2 : Haute liquidité — setups majeurs ─────────────
+    "ETHUSD": 18,
+    "XAGUSD": 16,   # silver — corrélé Gold
+    "GBPJPY": 14,   # ultra volatile → setup premium
+    "NAS100": 13,
+    # ── TIER 3 : Marchés standard — Breaker + majeurs seulement
     "SPX500":  9,
     "US30":    9,
-    "EURUSD":  7,
-    "USDJPY":  7,
-    "GBPUSD":  6,
-    "EURJPY":  6,
-    "ETHUSD":  14,   # ₿ ETH — haute liquidité crypto
-    "EURGBP":  5,    # paire européenne stable
+    "EURUSD":  8,
+    "USDJPY":  8,
+    "GBPUSD":  7,
+    "EURJPY":  7,
+    "EURGBP":  5,
 }
+
+# Tier 1 : TOUS les setups SMC/PA actifs + score bonus fort
+TIER1_MARKETS = {"XAUUSD", "BTCUSD"}
+# Tier 2 : setups majeurs actifs
+TIER2_MARKETS = {"ETHUSD", "XAGUSD", "GBPJPY", "NAS100"}
+# Tier 3 : Breaker Block + OB + FVG + CHoCH seulement (les plus fiables)
+TIER3_SETUPS_ALLOWED = {"Breaker Block", "OB", "FVG", "CHoCH", "BOS", "Sweep LL ✓", "Sweep HH ✓", "EQH prise ✓", "EQL prise ✓"}
 
 # ── Marchés AMD Premium (analyse H4 forcée) ─────────────────────────
 AMD_PREMIUM_MARKETS = {"XAUUSD", "BTCUSD", "XAGUSD", "ETHUSD"}
@@ -784,14 +800,142 @@ def generate_signal_chart(sig, candles=None):
     ax_i.text(0.50, y, "Not financial advice", transform=ax_i.transAxes,
               fontsize=6.5, color=GREY, va="top", ha="center", alpha=0.55)
 
-    fig.text(0.5, 0.01, "@leaderodg_bot", ha="center", fontsize=7.5, color=GREY, alpha=0.6)
+    # ── Watermark + branding ───────────────────────────────────
+    fig.text(0.5, 0.01, "@leaderodg_bot  |  AlphaBot PRO v21", ha="center",
+             fontsize=7.5, color=GREY, alpha=0.6)
+
+    # ── Bannière "SIGNAL PRO" en haut du chart ─────────────────
+    banner_color = GREEN if side == "BUY" else RED
+    fig.patches.append(plt.Rectangle((0, 0.955), 1, 0.045,
+        transform=fig.transFigure, color=banner_color, alpha=0.85, zorder=10))
+    fig.text(0.5, 0.967, "⚡  SIGNAL {}  —  {}  ⚡".format(side, name),
+             ha="center", va="center", fontsize=10, color="white",
+             fontweight="bold", zorder=11)
+
+    # ── Badge Score en coin ─────────────────────────────────────
+    score_color = "#ffd700" if score >= 90 else GREEN if score >= 75 else "#ff9800"
+    ax_i.add_patch(plt.FancyBboxPatch((0.60, 0.01), 0.38, 0.12,
+        boxstyle="round,pad=0.02", facecolor=score_color, alpha=0.18,
+        transform=ax_i.transAxes, zorder=12, edgecolor=score_color, linewidth=1.5))
+    ax_i.text(0.79, 0.07, "🏆 {}/100".format(score),
+        transform=ax_i.transAxes, fontsize=9, color=score_color,
+        ha="center", va="center", fontweight="bold", zorder=13)
 
     buf = BytesIO()
-    plt.savefig(buf, format="png", dpi=130, bbox_inches="tight",
+    plt.savefig(buf, format="png", dpi=140, bbox_inches="tight",
                 facecolor=BG, edgecolor="none")
     plt.close(fig)
     buf.seek(0)
     return buf.read()
+
+def generate_teasing_chart(sig, candles=None):
+    """
+    Génère une image de teasing pour le groupe GRATUIT.
+    Le chart est visible mais les niveaux (TP/SL/Entry) sont masqués
+    par un overlay "🔒 RÉSERVÉ PRO" pour inciter à l'upgrade.
+    """
+    if not _CHART_OK: return None
+    from io import BytesIO
+    import numpy as np
+
+    BG = "#0f1117"; BG2 = "#1a1d27"
+    GREEN = "#26a69a"; RED = "#ef5350"
+    YELLOW = "#ffd700"; WHITE = "#e0e0e0"; GREY = "#555566"
+    BLUR_COLOR = "#0f1117"
+
+    side  = sig["side"]
+    entry = float(sig["entry"])
+    tp    = float(sig["tp"])
+    sl    = float(sig["sl"])
+    name  = sig["name"]
+    emo   = CAT_EMO.get(sig["cat"], "📊")
+    color = GREEN if side == "BUY" else RED
+
+    fig = plt.figure(figsize=(8.5, 5), facecolor=BG)
+    ax_c = fig.add_axes([0.02, 0.10, 0.57, 0.82], facecolor=BG2)
+    ax_i = fig.add_axes([0.63, 0.04, 0.35, 0.92], facecolor=BG)
+
+    # ── Bougies réelles (visibles) ──────────────────────────────
+    if candles and len(candles) >= 8:
+        n = min(40, len(candles))
+        c = candles[-n:]
+        for i, cv in enumerate(c):
+            o, h, l, cl = cv["o"], cv["h"], cv["l"], cv["c"]
+            col = GREEN if cl >= o else RED
+            ax_c.plot([i, i], [l, h], color=col, linewidth=0.7, solid_capstyle="round")
+            ax_c.add_patch(plt.Rectangle((i-0.3, min(o,cl)), 0.6,
+                max(abs(cl-o), (h-l)*0.01), color=col, alpha=0.88))
+        x_end = n - 1
+    else:
+        np.random.seed(int(entry * 10) % 999)
+        pts = [entry * (1 + np.random.uniform(-0.002, 0.002)) for _ in range(35)]
+        pts[-1] = entry
+        ax_c.plot(pts, color=GREY, linewidth=1.1, alpha=0.7)
+        x_end = len(pts) - 1
+
+    # ── Lignes de niveaux floutées (traits mais sans valeurs) ───
+    ax_c.axhline(entry, color=YELLOW, linewidth=1.8, linestyle="--", alpha=0.3)
+    ax_c.axhline(tp,    color=GREEN,  linewidth=1.3, linestyle="-",  alpha=0.3)
+    ax_c.axhline(sl,    color=RED,    linewidth=1.3, linestyle="-",  alpha=0.3)
+
+    # ── Overlay "LOCKED" sur les valeurs ────────────────────────
+    for ypos in [entry, tp, sl]:
+        ax_c.add_patch(plt.Rectangle((x_end-2, ypos*(1-0.003)), 8, ypos*0.006,
+            color=BLUR_COLOR, alpha=0.95, zorder=10))
+    ax_c.text(x_end+0.5, entry, " 🔒", color=GREY, fontsize=8, va="center", zorder=11)
+    ax_c.text(x_end+0.5, tp,    " 🔒", color=GREY, fontsize=8, va="center", zorder=11)
+    ax_c.text(x_end+0.5, sl,    " 🔒", color=GREY, fontsize=8, va="center", zorder=11)
+
+    ax_c.set_facecolor(BG2); ax_c.tick_params(colors=GREY, labelsize=6)
+    for sp in ax_c.spines.values(): sp.set_color(GREY); sp.set_linewidth(0.4)
+    ax_c.set_xlim(-1, x_end + 6)
+    ax_c.set_title("M15  —  AlphaBot PRO v21", color=GREY, fontsize=7.5, pad=4)
+
+    # ── Panneau droit : teasing ──────────────────────────────────
+    ax_i.axis("off")
+    y = 0.97
+
+    ax_i.text(0.50, y, name + "  " + emo, transform=ax_i.transAxes,
+              fontsize=15, color=WHITE, va="top", ha="center", fontweight="bold"); y -= 0.11
+    dir_txt = "📈 BUY" if side == "BUY" else "📉 SELL"
+    ax_i.text(0.50, y, dir_txt, transform=ax_i.transAxes,
+              fontsize=13, color=color, va="top", ha="center", fontweight="bold"); y -= 0.13
+
+    # Cadenas sur chaque niveau
+    for label in ["🔒 Entrée", "🔒 TP", "🔒 SL", "🔒 RR"]:
+        ax_i.text(0.05, y, label, transform=ax_i.transAxes,
+                  fontsize=9.5, color=GREY, va="top")
+        ax_i.text(0.95, y, "— PRO —", transform=ax_i.transAxes,
+                  fontsize=9, color="#444455", va="top", ha="right", style="italic")
+        y -= 0.10
+
+    y -= 0.04
+    # CTA centré
+    ax_i.add_patch(plt.FancyBboxPatch((0.03, y-0.14), 0.94, 0.13,
+        boxstyle="round,pad=0.02", facecolor=color, alpha=0.20,
+        transform=ax_i.transAxes, zorder=5, edgecolor=color, linewidth=1.2))
+    ax_i.text(0.50, y-0.03, "👑 ACCÈS PRO", transform=ax_i.transAxes,
+              fontsize=10, color=color, ha="center", va="top", fontweight="bold", zorder=6)
+    ax_i.text(0.50, y-0.09, "/pay — 10$/mois", transform=ax_i.transAxes,
+              fontsize=8.5, color=WHITE, ha="center", va="top", zorder=6)
+
+    # ── Bannière top ────────────────────────────────────────────
+    fig.patches.append(plt.Rectangle((0, 0.955), 1, 0.045,
+        transform=fig.transFigure, color=color, alpha=0.85, zorder=10))
+    fig.text(0.5, 0.967, "⚡  SIGNAL DÉTECTÉ — {}  ⚡  [VERSION PRO]".format(name),
+             ha="center", va="center", fontsize=9.5, color="white",
+             fontweight="bold", zorder=11)
+
+    fig.text(0.5, 0.01, "@leaderodg_bot  |  Rejoins le PRO pour accéder aux niveaux",
+             ha="center", fontsize=7, color=GREY, alpha=0.6)
+
+    buf = BytesIO()
+    plt.savefig(buf, format="png", dpi=140, bbox_inches="tight",
+                facecolor=BG, edgecolor="none")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
+
 
 def tg_send_photo(cid, img_bytes, caption=""):
     """Envoie une image PNG via Telegram sendPhoto."""
@@ -950,7 +1094,7 @@ def fetch_c(sym, interval, period):
             if not res: continue
             ts   = res[0].get("timestamp", [])
             if ts and (time.time() - ts[-1]) / 60 > max_age:
-                log("WARN", clr("{} {} trop vieux — ignoré".format(sym, interval), "y"))
+                log("DEBUG", "{} {} données périmées (marché fermé) — ignoré".format(sym, interval))
                 return None
             q = res[0]["indicators"]["quote"][0]
             c = [{"o": float(o), "h": float(h), "l": float(l), "c": float(cv)}
@@ -1251,11 +1395,289 @@ def pat_fakeout_ict(c, bias):
                 last["c"] < last["o"] and body_last >= body_prev * 1.2)
     return False
 
+def pat_daily_high_low(c, bias, d1=None):
+    """
+    Daily High / Daily Low ICT.
+    Détecte si le prix est en train de manipuler (sweep) le DH ou DL
+    de la bougie Daily précédente avant retournement.
+
+    BUY  : sweep du Daily Low (PDL) + rejet haussier → entrée long
+    SELL : sweep du Daily High (PDH) + rejet baissier → entrée short
+
+    Utilise les données D1 si fournies, sinon estime depuis c (M15/M30).
+    """
+    if not c or len(c) < 20: return False, None, None
+
+    # Calcul PDH/PDL depuis D1 ou depuis les 96 bougies M15 (~1 jour)
+    if d1 and len(d1) >= 2:
+        pdh = d1[-2]["h"]
+        pdl = d1[-2]["l"]
+    else:
+        # Fallback : estimer depuis les 96 dernières bougies M15
+        window = c[-96:] if len(c) >= 96 else c
+        pdh = max(x["h"] for x in window)
+        pdl = min(x["l"] for x in window)
+
+    lp   = c[-1]["c"]
+    last = c[-1]
+    prev = c[-2]
+    tol  = (pdh - pdl) * 0.002  # tolérance 0.2% du range daily
+
+    if bias == "BULLISH":
+        # Sweep PDL : wick sous PDL puis clôture au-dessus
+        swept = prev["l"] <= pdl + tol or last["l"] <= pdl + tol
+        reject = last["c"] > pdl and last["c"] > last["o"]
+        body = abs(last["c"] - last["o"])
+        wick_low = last["o"] - last["l"] if last["c"] > last["o"] else last["c"] - last["l"]
+        if swept and reject and wick_low > body * 0.3:
+            return True, pdh, pdl
+
+    if bias == "BEARISH":
+        # Sweep PDH : wick au-dessus de PDH puis clôture en dessous
+        swept = prev["h"] >= pdh - tol or last["h"] >= pdh - tol
+        reject = last["c"] < pdh and last["c"] < last["o"]
+        body = abs(last["c"] - last["o"])
+        wick_high = last["h"] - last["o"] if last["c"] < last["o"] else last["h"] - last["c"]
+        if swept and reject and wick_high > body * 0.3:
+            return True, pdh, pdl
+
+    return False, pdh, pdl
+
+
+def pat_crt(c, bias):
+    """
+    CRT — Candle Range Theory (ICT).
+    Logique : la bougie N-1 est la "CRT candle" (range de référence).
+    La bougie N manipule un côté du range (High ou Low) avec un sweep,
+    puis se redistribue dans le sens opposé.
+
+    BUY  (BULLISH) :
+      - Bougie N-1 = range défini (High/Low)
+      - Bougie N   = sweep du Low de N-1 (manipulation)
+      - Clôture N  > milieu du range N-1 (redistribution haussière)
+
+    SELL (BEARISH) :
+      - Bougie N-1 = range défini
+      - Bougie N   = sweep du High de N-1 (manipulation)
+      - Clôture N  < milieu du range N-1 (redistribution baissière)
+    """
+    if not c or len(c) < 5: return False
+
+    ref  = c[-2]       # CRT candle (bougie de référence)
+    curr = c[-1]       # bougie courante (manipulation + redistribution)
+
+    ref_high = ref["h"]
+    ref_low  = ref["l"]
+    ref_mid  = (ref_high + ref_low) / 2
+    ref_range = ref_high - ref_low
+
+    if ref_range <= 0: return False
+
+    # La bougie de référence doit avoir un range significatif
+    # (au moins la moitié de l'ATR moyen des 10 dernières bougies)
+    avg_range = sum(abs(x["h"] - x["l"]) for x in c[-10:]) / 10
+    if ref_range < avg_range * 0.4: return False
+
+    if bias == "BULLISH":
+        # Sweep du Low de la CRT candle puis redistribution haussière
+        swept_low  = curr["l"] < ref_low                  # manipulation du Low
+        redis_bull = curr["c"] > ref_mid                  # clôture au-dessus du milieu
+        engulf     = curr["c"] > ref["o"]                 # force de la bougie
+        return swept_low and redis_bull and engulf
+
+    if bias == "BEARISH":
+        # Sweep du High de la CRT candle puis redistribution baissière
+        swept_high = curr["h"] > ref_high                 # manipulation du High
+        redis_bear = curr["c"] < ref_mid                  # clôture sous le milieu
+        engulf     = curr["c"] < ref["o"]                 # force de la bougie
+        return swept_high and redis_bear and engulf
+
+    return False
+
+
+def pat_hh_ll_confirmed(c, bias):
+    """
+    HH / LL Confirmé (continuation de structure ICT/SMC).
+    Différent de pat_hh_failed : ici le HH/LL EST confirmé par clôture.
+
+    BULLISH : nouveau Higher High confirmé par clôture → continuation
+    BEARISH : nouveau Lower Low confirmé par clôture → continuation
+
+    Condition supplémentaire : la correction intermédiaire (pullback)
+    ne doit pas dépasser 61.8% du dernier swing (structure intacte).
+    """
+    if len(c) < 20: return False
+    H, L = swings(c[-20:], n=3)
+
+    if bias == "BULLISH":
+        if len(H) < 2 or len(L) < 2: return False
+        h1, h2 = H[-2][1], H[-1][1]
+        l1, l2 = L[-2][1], L[-1][1]
+        last = c[-1]
+        # HH confirmé : nouveau high > ancien high, clôture au-dessus
+        hh_ok = last["c"] > h1 and last["h"] > h1
+        # HL intact : le dernier low est plus haut que l'avant-dernier
+        hl_ok = l2 > l1
+        # Pullback < 61.8% du dernier swing haussier
+        swing_size = h2 - l2 if h2 > l2 else 0
+        pullback   = (h2 - l2) / swing_size if swing_size > 0 else 1
+        return hh_ok and hl_ok and pullback < 0.618
+
+    if bias == "BEARISH":
+        if len(H) < 2 or len(L) < 2: return False
+        h1, h2 = H[-2][1], H[-1][1]
+        l1, l2 = L[-2][1], L[-1][1]
+        last = c[-1]
+        # LL confirmé : nouveau low < ancien low, clôture en dessous
+        ll_ok = last["c"] < l1 and last["l"] < l1
+        # LH intact : le dernier high est plus bas que l'avant-dernier
+        lh_ok = h2 < h1
+        # Pullback < 61.8% du dernier swing baissier
+        swing_size = h2 - l2 if h2 > l2 else 0
+        pullback   = (h2 - l2) / swing_size if swing_size > 0 else 1
+        return ll_ok and lh_ok and pullback < 0.618
+
+    return False
+
+
+def pat_silver_bullet(c, bias):
+    """
+    Silver Bullet ICT — fenêtres de temps institutionnelles.
+    Fenêtres valides (UTC) :
+      - 03h00–04h00  (Asia Kill Zone)
+      - 10h00–11h00  (London AM Silver Bullet)
+      - 14h00–15h00  (NY AM Silver Bullet)
+      - 20h00–21h00  (NY PM Silver Bullet)
+
+    Conditions :
+      - Prix dans la fenêtre temporelle Silver Bullet
+      - FVG créé dans la fenêtre + retest du FVG
+      - Aligné avec le biais H4
+    """
+    if not c or len(c) < 5: return False
+    h = datetime.now(timezone.utc).hour
+    m_ = datetime.now(timezone.utc).minute
+    # Vérifier si on est dans une fenêtre Silver Bullet
+    in_window = (
+        (h == 3)  or                          # Asia KZ
+        (h == 10) or                          # London AM
+        (h == 14) or                          # NY AM
+        (h == 20)                             # NY PM
+    )
+    if not in_window: return False
+
+    # FVG dans les 5 dernières bougies
+    last3 = c[-3:]
+    if len(last3) < 3: return False
+    a, b_, c_ = last3[0], last3[1], last3[2]
+
+    if bias == "BULLISH":
+        # FVG haussier : gap entre high[0] et low[2]
+        fvg_ok = a["h"] < c_["l"]
+        # Retest : prix revient dans le FVG
+        lp = c[-1]["c"]
+        retest = a["h"] <= lp <= c_["l"] if fvg_ok else False
+        return fvg_ok or (retest and c_["c"] > c_["o"])
+
+    if bias == "BEARISH":
+        # FVG baissier : gap entre low[0] et high[2]
+        fvg_ok = a["l"] > c_["h"]
+        lp = c[-1]["c"]
+        retest = c_["h"] <= lp <= a["l"] if fvg_ok else False
+        return fvg_ok or (retest and c_["c"] < c_["o"])
+
+    return False
+
+
+def pat_nwog_ndog(c, bias):
+    """
+    NWOG / NDOG — New Week/Day Opening Gap (ICT).
+    Le gap entre la clôture précédente et l'ouverture de la nouvelle
+    session constitue un niveau clé institutionnel.
+
+    NDOG : gap entre clôture 17h00 NY et ouverture 18h00 NY (quotidien)
+    NWOG : gap entre clôture vendredi 17h00 et ouverture dimanche 18h00
+
+    Logique : le prix revient combler le gap (magnétisme institutionnel)
+    puis continue dans le sens du biais H4.
+    """
+    if not c or len(c) < 10: return False
+
+    # Détecter un gap entre bougie N-5 et bougie N-4 (ouverture de session)
+    # Proxy : chercher un gap d'ouverture dans les 10 dernières bougies
+    for i in range(len(c) - 8, len(c) - 1):
+        if i < 1: continue
+        prev_close = c[i-1]["c"]
+        curr_open  = c[i]["o"]
+        gap_size   = abs(curr_open - prev_close)
+        avg_range  = sum(abs(x["h"] - x["l"]) for x in c[i-4:i]) / 4 if i >= 4 else 0
+        if avg_range == 0: continue
+
+        # Gap significatif (> 30% ATR moyen)
+        if gap_size < avg_range * 0.3: continue
+
+        lp = c[-1]["c"]
+        # Gap haussier (NDOG UP) → support, prix revient le tester
+        if curr_open > prev_close and bias == "BULLISH":
+            gap_mid = (curr_open + prev_close) / 2
+            if prev_close <= lp <= curr_open:
+                return True  # prix dans le gap → niveau clé
+        # Gap baissier (NDOG DOWN) → résistance
+        if curr_open < prev_close and bias == "BEARISH":
+            gap_mid = (curr_open + prev_close) / 2
+            if curr_open <= lp <= prev_close:
+                return True
+
+    return False
+
+
+def pat_midnight_open(c, bias):
+    """
+    Midnight Open ICT — niveau clé 00h00 UTC.
+    Le prix d'ouverture à minuit UTC est un niveau institutionnel majeur.
+    Le marché a tendance à revenir tester ce niveau avant de continuer.
+
+    Logique :
+      - Identifier le prix à 00h00 UTC (bougie la plus proche)
+      - Si le prix est au-dessus du Midnight Open → biais BULLISH confirmé
+      - Si le prix est en dessous → biais BEARISH confirmé
+      - Retest du niveau → entrée de haute probabilité
+    """
+    if not c or len(c) < 20: return False
+
+    # Estimer le Midnight Open : ouverture de la bougie ~96 bougies M15 ago
+    # (96 × 15min = 24h, donc la bougie d'il y a ~24h ≈ ouverture du jour)
+    idx_mo = max(0, len(c) - 96)
+    midnight_open = c[idx_mo]["o"]
+
+    lp   = c[-1]["c"]
+    atr_ = atr(c[-20:]) if len(c) >= 21 else abs(c[-1]["h"] - c[-1]["l"])
+    tol  = atr_ * 0.5  # tolérance 50% ATR pour le retest
+
+    if bias == "BULLISH":
+        # Prix au-dessus du MO + retest du niveau
+        above_mo = lp > midnight_open
+        retest   = abs(lp - midnight_open) < tol
+        # Bougie de rejet haussier sur le niveau
+        reject   = c[-1]["c"] > c[-1]["o"] and c[-1]["l"] < midnight_open + tol
+        return above_mo and (retest or reject)
+
+    if bias == "BEARISH":
+        # Prix en dessous du MO + retest du niveau
+        below_mo = lp < midnight_open
+        retest   = abs(lp - midnight_open) < tol
+        # Bougie de rejet baissier sur le niveau
+        reject   = c[-1]["c"] < c[-1]["o"] and c[-1]["h"] > midnight_open - tol
+        return below_mo and (retest or reject)
+
+    return False
+
+
 def pattern_score_m5(c, bias):
     """
     Calcule le bonus de score total des patterns M5.
     Retourne (score_bonus, liste_badges).
-    Max +65 pts. Tous optionnels.
+    Max +80 pts (étendu v21.6). Tous optionnels.
     """
     if not c or len(c) < 20: return 0, []
     score = 0; badges = []
@@ -1277,7 +1699,28 @@ def pattern_score_m5(c, bias):
     if pat_fakeout_ict(c, bias):
         score += 14
         badges.append("Fakeout ICT ✓")
-    return min(score, 65), badges
+    # ── NOUVEAUX PATTERNS v21.6 ───────────────────────────────
+    dhl_ok, _pdh, _pdl = pat_daily_high_low(c, bias)
+    if dhl_ok:
+        score += 16
+        badges.append("PDL Sweep ✓" if bias=="BULLISH" else "PDH Sweep ✓")
+    if pat_crt(c, bias):
+        score += 17
+        badges.append("CRT Bull ✓" if bias=="BULLISH" else "CRT Bear ✓")
+    if pat_hh_ll_confirmed(c, bias):
+        score += 13
+        badges.append("HH Confirm ✓" if bias=="BULLISH" else "LL Confirm ✓")
+    # ── NOUVEAUX PATTERNS ICT v21.6.1 ─────────────────────────────
+    if pat_silver_bullet(c, bias):
+        score += 20
+        badges.append("Silver Bullet ✓")
+    if pat_nwog_ndog(c, bias):
+        score += 16
+        badges.append("NDOG Gap ✓")
+    if pat_midnight_open(c, bias):
+        score += 15
+        badges.append("Midnight Open ✓")
+    return min(score, 95), badges
 
 # ══════════════════════════════════════════════════════
 #  AGENT ANALYZE PRINCIPAL
@@ -1512,16 +1955,517 @@ def agent_liquidity(candles, bias, lookback=40):
 
     return None  # Pas de prise de liquidité détectée → signal refusé
 
+
+
+# ══════════════════════════════════════════════════════
+#  📐 SETUPS AVANCÉS SMC + PRICE ACTION (v21.5)
+#  Basés sur les patterns institutionnels ICT/SMC
+# ══════════════════════════════════════════════════════
+
+def pat_breaker_block(c, bias):
+    """
+    Breaker Block : ancien OB cassé → devient support/résistance.
+    Séquence : BOS → retour sur l'ancien OB (maintenant Breaker) → rejet.
+    Images 1, 2, 4, 7.
+    """
+    if len(c) < 25: return False, None
+    # Trouver le BOS (cassure de structure)
+    highs = [x["h"] for x in c[:-5]]
+    lows  = [x["l"] for x in c[:-5]]
+    lp = c[-1]["c"]
+    if not highs or not lows: return False, None
+
+    if bias == "BULLISH":
+        # BOS haussier : prix a cassé un HH précédent
+        prev_hh = max(highs[-20:])
+        bos_ok = any(x["c"] > prev_hh for x in c[-10:])
+        if not bos_ok: return False, None
+        # Breaker = zone de l'ancien swing bas avant le BOS
+        bb_zone = min(lows[-15:])
+        in_bb = bb_zone * 0.998 <= lp <= bb_zone * 1.005
+        return in_bb, bb_zone
+    else:
+        prev_ll = min(lows[-20:])
+        bos_ok = any(x["c"] < prev_ll for x in c[-10:])
+        if not bos_ok: return False, None
+        bb_zone = max(highs[-15:])
+        in_bb = bb_zone * 0.995 <= lp <= bb_zone * 1.002
+        return in_bb, bb_zone
+
+def pat_demand_supply_zone(c, bias):
+    """
+    Demand Zone (haussier) / Supply Zone (baissier).
+    Zone d'accumulation institutionnelle avant un mouvement fort.
+    Image 3, 17.
+    """
+    if len(c) < 20: return False
+    # Zone de demande = range serré suivi d'une bougie impulsive
+    impulse_thresh = atr(c) * 1.5
+    for i in range(5, min(25, len(c)-3)):
+        cv = c[-i]
+        body = abs(cv["c"] - cv["o"])
+        if body < impulse_thresh: continue
+        # Bougie impulsive dans le bon sens
+        if bias == "BULLISH" and cv["c"] > cv["o"]:
+            # Range serré avant l'impulsion
+            pre_range = max(x["h"] for x in c[-i-5:-i]) - min(x["l"] for x in c[-i-5:-i])
+            if pre_range < atr(c) * 0.8:
+                # Le prix reteste-t-il cette zone ?
+                zone_lo = min(cv["o"], cv["c"])
+                zone_hi = max(cv["o"], cv["c"])
+                lp = c[-1]["c"]
+                if zone_lo * 0.999 <= lp <= zone_hi * 1.001:
+                    return True
+        if bias == "BEARISH" and cv["c"] < cv["o"]:
+            pre_range = max(x["h"] for x in c[-i-5:-i]) - min(x["l"] for x in c[-i-5:-i])
+            if pre_range < atr(c) * 0.8:
+                zone_lo = min(cv["o"], cv["c"])
+                zone_hi = max(cv["o"], cv["c"])
+                lp = c[-1]["c"]
+                if zone_lo * 0.999 <= lp <= zone_hi * 1.001:
+                    return True
+    return False
+
+def pat_fvg_fib_confluence(c, bias):
+    """
+    FVG + Niveau Fibonacci en confluence.
+    Le prix reteste un FVG qui coïncide avec Fib 0.5-0.618.
+    Images 9, 10, 15.
+    """
+    if len(c) < 30: return False
+    fvg_z = fvg(c, bias, look=40)
+    if not fvg_z: return False
+    H_sw, L_sw = swings(c, n=3)
+    if not H_sw or not L_sw: return False
+    sh = H_sw[-1][1]; sl_ = L_sw[-1][1]
+    rng = sh - sl_
+    if rng <= 0: return False
+    # Niveaux Fibonacci clés
+    fib50 = sh - rng * 0.50
+    fib618 = sh - rng * 0.618
+    fib500_lo = min(fib50, fib618) * 0.999
+    fib618_hi = max(fib50, fib618) * 1.001
+    # FVG dans la zone Fib ?
+    fvg_mid = (fvg_z[0] + fvg_z[1]) / 2
+    return fib500_lo <= fvg_mid <= fib618_hi
+
+def pat_idm_sell_trap(c, bias):
+    """
+    IDM / Inducement / Sell Trap (ICT).
+    Faux signal dans une direction avant le vrai mouvement.
+    Le prix fait un spike bas (liquidity grab) puis repart dans le biais.
+    Image 19.
+    """
+    if len(c) < 15: return False
+    lp = c[-1]["c"]
+    a  = atr(c)
+    # Spike récent + retour rapide
+    for i in range(2, 8):
+        spike = c[-i]
+        if bias == "BULLISH":
+            # Spike bas suivi de clôtures haussières
+            if spike["l"] < min(x["l"] for x in c[-i-5:-i]):
+                if all(x["c"] > x["o"] for x in c[-i+1:-1]):
+                    return True
+        else:
+            # Spike haut suivi de clôtures baissières
+            if spike["h"] > max(x["h"] for x in c[-i-5:-i]):
+                if all(x["c"] < x["o"] for x in c[-i+1:-1]):
+                    return True
+    return False
+
+def pat_lh_breakout(c, bias):
+    """
+    Lower High Breakout (haussier) / Higher Low Breakdown (baissier).
+    Cassure d'une LH en tendance baissière → retournement haussier.
+    Images 5, 9, 20.
+    """
+    if len(c) < 20: return False
+    H_sw, L_sw = swings(c, n=4)
+    lp = c[-1]["c"]
+
+    if bias == "BULLISH" and len(H_sw) >= 3:
+        # Séquence LH, LH, puis cassure → HH
+        h1, h2, h3 = H_sw[-3][1], H_sw[-2][1], H_sw[-1][1]
+        was_downtrend = h2 < h1  # LH
+        breakout = h3 > h2 and lp > h2  # cassure de la LH
+        return was_downtrend and breakout
+
+    if bias == "BEARISH" and len(L_sw) >= 3:
+        l1, l2, l3 = L_sw[-3][1], L_sw[-2][1], L_sw[-1][1]
+        was_uptrend = l2 > l1  # HL
+        breakdown = l3 < l2 and lp < l2  # cassure du HL
+        return was_uptrend and breakdown
+
+    return False
+
+def pat_fvg_filled_retest(c, bias):
+    """
+    FVG Filled → retest du niveau après remplissage.
+    Après que le FVG est comblé, le niveau devient support/résistance.
+    Image 15.
+    """
+    if len(c) < 30: return False
+    # Chercher un FVG ancien (comblé) qui sert de niveau de retest
+    scan = c[-40:] if len(c) >= 40 else c
+    lp = c[-1]["c"]
+    for i in range(5, len(scan)-5):
+        cv1, cv2, cv3 = scan[i-1], scan[i], scan[i+1]
+        if bias == "BULLISH":
+            fl, fh = cv1["h"], cv3["l"]
+            if fh > fl:
+                # FVG comblé si le prix est passé en dessous de fl
+                gap_comble = any(x["l"] < fl for x in scan[i+2:])
+                # Retest : prix revient sur fl
+                if gap_comble and abs(lp - fl) / (fl + 0.0001) < 0.003:
+                    return True
+        else:
+            fh2, fl2 = cv1["l"], cv3["h"]
+            if fh2 > fl2:
+                gap_comble = any(x["h"] > fh2 for x in scan[i+2:])
+                if gap_comble and abs(lp - fh2) / (fh2 + 0.0001) < 0.003:
+                    return True
+    return False
+
+def pat_descending_triangle_fakeout(c, bias):
+    """
+    Triangle descendant + Fakeout (image 6, 11).
+    Faux breakout sous le support horizontal → retournement haussier.
+    Triangle ascendant + fakeout haut → retournement baissier.
+    """
+    if len(c) < 20 or bias != "BULLISH": return False
+    # Support horizontal : plusieurs touches du même niveau bas
+    lows = [x["l"] for x in c[-20:]]
+    avg_low = sum(sorted(lows)[:5]) / 5  # moyenne des 5 plus bas
+    touches = sum(1 for l in lows if abs(l - avg_low) / (avg_low + 0.0001) < 0.002)
+    if touches < 3: return False
+    # Fakeout : dernier bas en dessous, puis clôture au-dessus
+    last = c[-1]; prev = c[-2]
+    fakeout = prev["l"] < avg_low and last["c"] > avg_low and last["c"] > last["o"]
+    return fakeout
+
+# ══════════════════════════════════════════════════════
+#  🕐 AMD — Accumulation / Manipulation / Distribution
+#  Détecte la phase de marché sur M15/M30 pour filtrer
+#  les entrées dans la bonne phase (Distribution=entrée)
+# ══════════════════════════════════════════════════════
+
+def detect_amd_phase(c, session_name=""):
+    """
+    Détecte la phase AMD (ICT) sur les dernières bougies.
+    Retourne : ("ACCUMULATION"|"MANIPULATION"|"DISTRIBUTION"|"UNKNOWN", badge, score_adj)
+
+    Logique temporelle ICT :
+    - Accumulation  : range serré, volume faible (00h-08h UTC)
+    - Manipulation  : fakeout / stop hunt soudain (08h-10h / 13h-15h UTC)
+    - Distribution  : tendance directionnelle franche (10h-13h / 15h-20h UTC)
+    """
+    if not c or len(c) < 20:
+        return "UNKNOWN", "", 0
+
+    # Mesures de base
+    recent  = c[-20:]
+    bodies  = [abs(x["c"] - x["o"]) for x in recent]
+    ranges_ = [x["h"] - x["l"]     for x in recent]
+    avg_body = sum(bodies) / len(bodies)  if bodies  else 0.001
+    avg_rng  = sum(ranges_) / len(ranges_) if ranges_ else 0.001
+
+    last5   = c[-5:]
+    last3   = c[-3:]
+    lp      = c[-1]["c"]
+
+    # ── Accumulation : bougies serrées, peu de mouvement ──────────
+    tight = sum(1 for b in bodies[-10:] if b < avg_body * 0.5)
+    if tight >= 7:
+        return "ACCUMULATION", "⏳ Accum", -5   # phase d'attente → pénalité légère
+
+    # ── Manipulation : spike soudain + rejet (stop hunt) ──────────
+    # 1 ou 2 bougies avec wick > 2× corps = manipulation
+    spike_count = 0
+    for cv in last5:
+        body = abs(cv["c"] - cv["o"])
+        wick_up   = cv["h"] - max(cv["c"], cv["o"])
+        wick_down = min(cv["c"], cv["o"]) - cv["l"]
+        if body > 0 and (wick_up > body * 2 or wick_down > body * 2):
+            spike_count += 1
+    if spike_count >= 1:
+        return "MANIPULATION", "🪤 Manip", +8   # stop hunt = bon point d'entrée après
+
+    # ── Distribution : bougies directionnelles consécutives ───────
+    bull_candles = sum(1 for x in last5 if x["c"] > x["o"])
+    bear_candles = sum(1 for x in last5 if x["c"] < x["o"])
+    if bull_candles >= 3 or bear_candles >= 3:
+        return "DISTRIBUTION", "📈 Distrib", +5  # tendance en cours → confirme
+
+    return "UNKNOWN", "", 0
+
+
+def confirmation_candle(c, bias, pip_size=0.0001):
+    """
+    Bougie de confirmation M15/M30 (ICT/SMC).
+    Retourne (True, badge, score_bonus) si une bougie de confirmation
+    est présente sur les 3 dernières bougies.
+
+    Setups détectés :
+    - Engulfing         : bougie englobe le corps précédent
+    - Pin Bar / Hammer  : wick long + clôture opposée
+    - BOS candle        : cassure de structure + clôture au-delà du swing
+    - FVG retest candle : prix revient en FVG et rebondit
+    - OB rejection      : rejet depuis Order Block (wick + clôture opposée)
+    - CHoCH candle      : bougie qui change la structure (clôture > dernier HH ou < LL)
+    """
+    if not c or len(c) < 5:
+        return False, "", 0
+
+    last = c[-1]; prev = c[-2]; prev2 = c[-3]
+    body_last  = abs(last["c"] - last["o"])
+    body_prev  = abs(prev["c"] - prev["o"])
+    rng_last   = last["h"] - last["l"]
+    wick_up    = last["h"] - max(last["c"], last["o"])
+    wick_down  = min(last["c"], last["o"]) - last["l"]
+
+    if rng_last == 0: return False, "", 0
+    body_ratio = body_last / rng_last
+
+    if bias == "BULLISH":
+        # 1. Bullish Engulfing : corps dernier > corps précédent, clôture haussière
+        if (last["c"] > last["o"] and
+            last["o"] <= prev["c"] and last["c"] >= prev["o"] and
+            body_last > body_prev * 1.1):
+            return True, "Engulf ✓", 18
+
+        # 2. Hammer / Pin Bar : wick bas long, petit corps haut de range
+        if (last["c"] > last["o"] and
+            wick_down > body_last * 2.0 and
+            wick_up < body_last * 0.5 and
+            body_ratio > 0.15):
+            return True, "Hammer ✓", 15
+
+        # 3. BOS bullish : clôture au-dessus du dernier HH
+        highs = [x["h"] for x in c[-20:-1]]
+        if highs and last["c"] > max(highs) and last["c"] > last["o"]:
+            return True, "BOS ✓", 20
+
+        # 4. CHoCH bullish : clôture au-dessus du dernier pivot haut intermédiaire
+        if len(c) >= 10:
+            mid_highs = [x["h"] for x in c[-10:-2]]
+            if mid_highs and last["c"] > max(mid_highs) * 1.0002:
+                return True, "CHoCH ✓", 16
+
+        # 5. OB rejection : corps haussier après wick bas dans zone OB
+        if (wick_down > body_last * 1.5 and
+            last["c"] > last["o"] and
+            last["c"] > prev["h"]):
+            return True, "OB Rejet ✓", 14
+
+    else:  # BEARISH
+        # 1. Bearish Engulfing
+        if (last["c"] < last["o"] and
+            last["o"] >= prev["c"] and last["c"] <= prev["o"] and
+            body_last > body_prev * 1.1):
+            return True, "Engulf ✓", 18
+
+        # 2. Shooting Star / Pin Bar baissier
+        if (last["c"] < last["o"] and
+            wick_up > body_last * 2.0 and
+            wick_down < body_last * 0.5 and
+            body_ratio > 0.15):
+            return True, "Shooting★ ✓", 15
+
+        # 3. BOS bearish : clôture en dessous du dernier LL
+        lows = [x["l"] for x in c[-20:-1]]
+        if lows and last["c"] < min(lows) and last["c"] < last["o"]:
+            return True, "BOS ✓", 20
+
+        # 4. CHoCH bearish
+        if len(c) >= 10:
+            mid_lows = [x["l"] for x in c[-10:-2]]
+            if mid_lows and last["c"] < min(mid_lows) * 0.9998:
+                return True, "CHoCH ✓", 16
+
+        # 5. OB rejection baissier
+        if (wick_up > body_last * 1.5 and
+            last["c"] < last["o"] and
+            last["c"] < prev["l"]):
+            return True, "OB Rejet ✓", 14
+
+    return False, "", 0
+
+
+def smc_pa_setups(c, bias):
+    """
+    Détecte tous les setups SMC + Price Action sur c (M15 ou M30).
+    Retourne liste de (nom_setup, score_bonus) triée par score décroissant.
+
+    Setups complets v21.5 (basés sur images de référence) :
+    ── SMC Institutionnel ──────────────────────────────
+    - Order Block (OB)         : zone d'intérêt institutionnel
+    - Breaker Block (BB)       : OB cassé → support/résistance
+    - Fair Value Gap (FVG)     : déséquilibre + retest
+    - FVG Filled + Retest      : FVG comblé → niveau de retest
+    - FVG + Fib Confluence     : FVG aligné avec Fib 0.5-0.618
+    - CHoCH                    : changement de structure x2+
+    - Break of Structure (BOS) : cassure confirmée par clôture
+    - MSS                      : Market Structure Shift
+    - Demand / Supply Zone     : zone institutionnelle d'accumulation
+    - IDM / Inducement         : faux signal → vrai mouvement
+    ── Liquidité ───────────────────────────────────────
+    - Liquidity Sweep          : prise de liquidité externe
+    - Buy/Sell Side Liquidity  : pool de liquidité ciblé
+    - Equal Highs / Lows       : EQH/EQL pris
+    - OTE Zone (Fib 0.62-0.79) : zone optimale d'entrée
+    ── Price Action ────────────────────────────────────
+    - Double Top / Double Bot  : pattern classique confirmé
+    - Head & Shoulders / IH&S  : pattern classique confirmé
+    - HH Failed / LL Failed    : échec de continuation
+    - LH Breakout              : cassure d'une Lower High
+    - Fakeout + retournement   : faux breakout + rejet
+    - Triangle Fakeout         : triangle + spike + retournement
+    - Breakout + Retest        : cassure d'un niveau clé + pullback
+    """
+    if not c or len(c) < 20:
+        return []
+
+    setups = []
+    lp = c[-1]["c"]
+
+    # ── ORDRE BLOCK ──────────────────────────────────────────────
+    obs = breakers(c, bias, lookback=60)
+    if obs:
+        setups.append(("OB", 15))
+
+    # ── BREAKER BLOCK ────────────────────────────────────────────
+    bb_ok, bb_zone = pat_breaker_block(c, bias)
+    if bb_ok:
+        setups.append(("Breaker Block", 18))
+
+    # ── FAIR VALUE GAP ───────────────────────────────────────────
+    fvg_z = fvg(c, bias, look=40)
+    if fvg_z:
+        setups.append(("FVG", 12))
+
+    # ── FVG FILLED + RETEST ──────────────────────────────────────
+    if pat_fvg_filled_retest(c, bias):
+        setups.append(("FVG Retest", 13))
+
+    # ── FVG + FIBONACCI CONFLUENCE ───────────────────────────────
+    if pat_fvg_fib_confluence(c, bias):
+        setups.append(("FVG+Fib", 16))
+
+    # ── CHoCH SÉQUENTIEL ─────────────────────────────────────────
+    cd, cc = choch_seq(c)
+    if cc >= 2 and cd == bias:
+        setups.append(("CHoCHx{}".format(cc), 10 + cc * 3))
+
+    # ── BREAK OF STRUCTURE ───────────────────────────────────────
+    highs = [x["h"] for x in c[:-3]]
+    lows  = [x["l"] for x in c[:-3]]
+    if bias == "BULLISH" and highs and lp > max(highs[-20:]):
+        setups.append(("BOS", 14))
+    if bias == "BEARISH" and lows and lp < min(lows[-20:]):
+        setups.append(("BOS", 14))
+
+    # ── DEMAND / SUPPLY ZONE ────────────────────────────────────
+    if pat_demand_supply_zone(c, bias):
+        setups.append(("Demand/Supply", 14))
+
+    # ── IDM / INDUCEMENT / SELL TRAP ────────────────────────────
+    if pat_idm_sell_trap(c, bias):
+        setups.append(("IDM Trap", 15))
+
+    # ── LIQUIDITY SWEEP ──────────────────────────────────────────
+    liq = agent_liquidity(c, bias, lookback=30)
+    if liq:
+        setups.append((liq["label"].replace(" ✓", ""), liq["score"]))
+
+    # ── OTE FIBONACCI ────────────────────────────────────────────
+    H_sw, L_sw = swings(c, n=3)
+    if H_sw and L_sw:
+        sh = H_sw[-1][1]; sl_ = L_sw[-1][1]
+        lo, hi = ote_zone(sh, sl_, bias)
+        if lo and hi and lo <= lp <= hi:
+            setups.append(("OTE Fibo", 14))
+
+    # ── EQH / EQL ────────────────────────────────────────────────
+    eq_h, eq_l = eqh_eql(c)
+    if bias == "BEARISH" and eq_h and abs(lp - eq_h) / eq_h < 0.003:
+        setups.append(("EQH", 10))
+    if bias == "BULLISH" and eq_l and abs(lp - eq_l) / eq_l < 0.003:
+        setups.append(("EQL", 10))
+
+    # ── DOUBLE TOP / BOTTOM ──────────────────────────────────────
+    if pat_double_top_bottom(c, bias):
+        setups.append(("Double Top/Bot", 12))
+
+    # ── HEAD & SHOULDERS ─────────────────────────────────────────
+    if pat_head_shoulders(c, bias):
+        setups.append(("H&S", 12))
+
+    # ── HH FAILED / LL FAILED ───────────────────────────────────
+    if pat_hh_failed(c, bias):
+        setups.append(("HH/LL Failed", 12))
+
+    # ── LH BREAKOUT / HL BREAKDOWN ──────────────────────────────
+    if pat_lh_breakout(c, bias):
+        setups.append(("LH Breakout", 14))
+
+    # ── FAKEOUT ICT ──────────────────────────────────────────────
+    if pat_fakeout_ict(c, bias):
+        setups.append(("Fakeout ICT", 14))
+
+    # ── TRIANGLE FAKEOUT ─────────────────────────────────────────
+    if pat_descending_triangle_fakeout(c, bias):
+        setups.append(("Triangle BO", 13))
+
+    # ── BREAKOUT + RETEST ────────────────────────────────────────
+    if pat_breakout_retest(c, bias):
+        setups.append(("BO+Retest", 16))
+
+    # ── DAILY HIGH / DAILY LOW (PDH/PDL Sweep ICT) ───────────────
+    dhl_ok, _pdh, _pdl = pat_daily_high_low(c, bias)
+    if dhl_ok:
+        label = "PDL Sweep" if bias == "BULLISH" else "PDH Sweep"
+        setups.append((label, 18))
+
+    # ── CRT — Candle Range Theory ─────────────────────────────────
+    if pat_crt(c, bias):
+        label = "CRT Bull" if bias == "BULLISH" else "CRT Bear"
+        setups.append((label, 19))
+
+    # ── HH / LL CONFIRMÉ (continuation de structure) ─────────────
+    if pat_hh_ll_confirmed(c, bias):
+        label = "HH Confirm" if bias == "BULLISH" else "LL Confirm"
+        setups.append((label, 15))
+
+    # ── SILVER BULLET ICT ─────────────────────────────────────────
+    if pat_silver_bullet(c, bias):
+        setups.append(("Silver Bullet", 20))
+
+    # ── NWOG / NDOG (Opening Gap) ─────────────────────────────────
+    if pat_nwog_ndog(c, bias):
+        setups.append(("NDOG Gap", 16))
+
+    # ── MIDNIGHT OPEN ICT ─────────────────────────────────────────
+    if pat_midnight_open(c, bias):
+        setups.append(("Midnight Open", 15))
+
+    # Trier par score décroissant
+    setups.sort(key=lambda x: x[1], reverse=True)
+    return setups
+
 def agent_analyze(m, score_min, news_ok, q):
     """
-    Analyse multi-timeframe v11 :
-      H1  → tendance de fond (obligatoire)
-      M15 → Order Block + structure (obligatoire)
-      M5  → confirmation d'entrée précise (nouveau — fortement pondéré)
+    Analyse multi-timeframe v21.4 :
+      H4  → tendance de fond (obligatoire)
+      M15 → structure + Order Block + liquidité (obligatoire)
+      M30 → confirmation intermédiaire (optionnel si M15 OK)
+      Bougie de confirmation M15/M30 OBLIGATOIRE (Engulfing/Hammer/BOS/CHoCH)
+      AMD → phase de marché (filtre Accumulation)
+      SMC + Price Action → tous les setups scorés
       M1  → ultra-précision optionnelle (bonus léger)
 
     RR minimum : 3.0 normal / 1.5 scalp week-end
-    Obligatoires : biais H1 + OB M15 + liquidité M15
+    Obligatoires : biais H4 + OB M15 + liquidité M15
     M5 aligné → +bonus fort  |  M5 contraire → pénalité
     """
     try:
@@ -1535,17 +2479,17 @@ def agent_analyze(m, score_min, news_ok, q):
                    "reason": "Session FOREX inactive ({})".format(sn), "improv": False})
             return
 
-        # ── H1 : tendance de fond (obligatoire) ──────────────────
-        h1 = fetch_c(m["sym"], "1h", "30d") or fetch_c(m["sym"], "4h", "60d")
+        # ── H4 : tendance de fond (obligatoire) ──────────────────
+        h1 = fetch_c(m["sym"], "4h", "60d") or fetch_c(m["sym"], "1d", "180d")
         if not h1 or len(h1) < 10:
             q.put({"name": m["name"], "cat": m["cat"], "found": False,
-                   "reason": "H1 insuffisant"}); return
+                   "reason": "H4 insuffisant"}); return
         b, bos, bt = detect_bias(h1)
         if b == "NEUTRAL":
             q.put({"name": m["name"], "cat": m["cat"], "found": False,
-                   "reason": "Neutre H1"}); return
+                   "reason": "Neutre H4"}); return
 
-        # ── Confirmation tendance H1 ──────────────────────────────
+        # ── Confirmation tendance H4 ──────────────────────────────
         cd2, cc2 = choch_seq(h1)
         h1_closes = [x["c"] for x in h1[-50:]]
         h1_ema20  = sum(h1_closes[-20:]) / 20 if len(h1_closes) >= 20 else h1_closes[-1]
@@ -1560,7 +2504,7 @@ def agent_analyze(m, score_min, news_ok, q):
         if b == "BEARISH" and len(L_sw) >= 2 and L_sw[-1][1] < L_sw[-2][1]: trend_score += 1
         if trend_score == 0:
             q.put({"name": m["name"], "cat": m["cat"], "found": False,
-                   "reason": "Tendance H1 faible"}); return
+                   "reason": "Tendance H4 faible"}); return
 
         time.sleep(0.08)
 
@@ -1606,81 +2550,116 @@ def agent_analyze(m, score_min, news_ok, q):
         if fund_adj != 0:
             sc = min(max(0, sc + fund_adj), 115)
 
-        # ── M5 : TIMEFRAME D'ENTRÉE (nouveau v11) ─────────────────
-        # Charge M5 une seule fois — utilisé pour patterns ET entrée
-        m5_raw = fetch_c(m["sym"], "5m", "3d")
-        m5_conf = {
-            "ok": False, "bias_ok": False, "score": 0,
-            "badges": [], "liq": None, "fvg": None, "ob": None,
-            "choch": 0, "details": "M5 indispo"
-        }
-        if m5_raw and len(m5_raw) >= 15:
-            m5_sl    = m5_raw[-50:] if len(m5_raw) >= 50 else m5_raw
-            m5_bias, _, m5_bt = detect_bias(m5_sl)
-            m5_liq   = agent_liquidity(m5_sl[-20:], b) if len(m5_sl) >= 20 else None
-            m5_fvg   = fvg(m5_sl, b, look=20)
-            m5_obs   = breakers(m5_sl, b)
-            m5_cd, m5_cc = choch_seq(m5_sl)
-            m5_ema   = sum(x["c"] for x in m5_sl[-10:]) / 10 if len(m5_sl) >= 10 else lp
+        # ══════════════════════════════════════════════════════
+        #  TIMEFRAME D'ENTRÉE : M15 principal, M30 fallback
+        #  Confirmation : bougie de confirmation obligatoire
+        #  AMD : phase de marché (Accumulation/Manip/Distrib)
+        #  SMC + Price Action : tous les setups détectés
+        # ══════════════════════════════════════════════════════
 
-            m5_bonus  = 0
-            m5_badges = []
+        # ── H4 : confirmation sur le timeframe de scan principal ──
+        # h1 est déjà les données H4 (chargées plus haut comme tendance)
+        market_name = m["name"]  # alias utilisé pour filtres Tier
+        h4_conf_ok, h4_conf_badge, h4_conf_bonus = confirmation_candle(h1, b, m["pip"])
+        h4_amd, h4_amd_badge, h4_amd_adj = detect_amd_phase(h1, sn)
+        h4_setups = smc_pa_setups(h1, b)  # setups sur H4
+        h4_pa_score = min(sum(s for _, s in h4_setups), 40)
+        h4_pa_badges = [name for name, _ in h4_setups[:3]]
+        if h4_conf_ok:
+            sc = min(sc + h4_conf_bonus + 5, 115)  # bonus +5 car H4 = TF principal
+        if h4_pa_score > 0:
+            sc = min(sc + h4_pa_score, 115)
+        if h4_amd_adj != 0:
+            sc = min(max(0, sc + h4_amd_adj), 115)
+        if h4_amd == "ACCUMULATION" and market_name not in TIER1_MARKETS:
+            q.put({"name": m["name"], "cat": m["cat"], "found": False,
+                   "reason": "H4 AMD: Accumulation", "improv": False}); return
 
-            # Biais M5 aligné avec H1 → fondation
-            if m5_bias == b:
-                m5_bonus += 10
-                m5_badges.append("M5-Trend✓")
-                m5_conf["bias_ok"] = True
-            # Liquidité M5 (stop hunt / sweep / EQH-EQL)
-            if m5_liq:
-                m5_bonus += 15
-                m5_badges.append("M5-{}".format(m5_liq["label"].replace(" ✓", "")))
-                m5_conf["liq"] = m5_liq
-            # FVG M5 actif
-            if m5_fvg:
-                m5_bonus += 10
-                m5_badges.append("M5-FVG✓")
-                m5_conf["fvg"] = m5_fvg
-            # Order Block M5
-            if m5_obs:
-                m5_bonus += 8
-                m5_badges.append("M5-OB✓")
-                m5_conf["ob"] = m5_obs[0]
-            # CHoCH M5 (confirmation de changement de structure)
-            if m5_cc >= 2 and m5_cd == b[:4].rstrip("ISH"):
-                m5_bonus += 7
-                m5_badges.append("M5-CHoCH✓")
-                m5_conf["choch"] = m5_cc
+        # ── Chargement M30 (structure intermédiaire) ──────────────
+        m30 = fetch_c(m["sym"], "30m", "15d")
+        m30_ok = bool(m30 and len(m30) >= 15)
 
-            m5_conf["score"]   = m5_bonus
-            m5_conf["badges"]  = m5_badges
-            m5_conf["ok"]      = m5_bonus >= 10  # au moins 1 confirmation M5
+        # ── Choix du TF d'entrée : M15 prioritaire, M30 si M15 KO ─
+        entry_tf   = m15        # M15 déjà chargé
+        entry_tf_name = "M15"
+        if not m15 or len(m15) < 20:
+            if m30_ok:
+                entry_tf      = m30
+                entry_tf_name = "M30"
+            else:
+                q.put({"name": m["name"], "cat": m["cat"], "found": False,
+                       "reason": "M15/M30 indispo"}); return
 
-            detail_parts = []
-            if m5_conf["bias_ok"]: detail_parts.append("biais✓")
-            if m5_conf["liq"]:     detail_parts.append("liq✓")
-            if m5_conf["fvg"]:     detail_parts.append("fvg✓")
-            if m5_conf["ob"]:      detail_parts.append("ob✓")
-            m5_conf["details"] = " · ".join(detail_parts) if detail_parts else "pas de setup"
+        etf = entry_tf  # alias court
 
-            if m5_conf["ok"]:
-                sc = min(sc + m5_bonus, 115)     # fort bonus si M5 confirme
-            elif not m5_conf["bias_ok"]:
-                sc = max(0, sc - 12)              # M5 contraire → pénalité
-        else:
-            m5_raw = None  # pas de données M5
+        # ── AMD : phase de marché sur TF d'entrée ─────────────────
+        amd_phase, amd_badge, amd_adj = detect_amd_phase(etf, sn)
+        if amd_phase == "ACCUMULATION":
+            # Phase d'attente → pas d'entrée sauf score très élevé
+            if sc < s_min + 15:
+                q.put({"name": m["name"], "cat": m["cat"], "found": False,
+                       "reason": "AMD: Accumulation (attente)", "improv": False}); return
+        if amd_adj != 0:
+            sc = min(max(0, sc + amd_adj), 115)
 
-        # ── Patterns M5 (visuels — bonus score) ──────────────────
-        pat_bonus, pat_badges = pattern_score_m5(m5_raw, b) if m5_raw else (0, [])
+        # ── BOUGIE DE CONFIRMATION (OBLIGATOIRE) ──────────────────
+        conf_ok, conf_badge, conf_bonus = confirmation_candle(etf, b, m["pip"])
+        if not conf_ok:
+            q.put({"name": m["name"], "cat": m["cat"], "found": False,
+                   "reason": "Pas de bougie confirmation {}".format(entry_tf_name),
+                   "improv": False}); return
+        sc = min(sc + conf_bonus, 115)
+
+        # ── SETUPS SMC + PRICE ACTION sur TF d'entrée ─────────────
+        pa_setups = smc_pa_setups(etf, b)
+        pa_score  = min(sum(s for _, s in pa_setups), 50)  # cap +50
+        pa_badges = [name for name, _ in pa_setups]
+        if pa_score > 0:
+            sc = min(sc + pa_score, 115)
+
+        # ── Analyse M30 (si M15 est le TF principal) ──────────────
+        m30_conf = {"ok": False, "bias_ok": False, "score": 0, "badges": [], "details": "M30 indispo"}
+        if m30_ok and entry_tf_name == "M15":
+            m30_sl   = m30[-50:] if len(m30) >= 50 else m30
+            m30_bias, _, _ = detect_bias(m30_sl)
+            m30_liq  = agent_liquidity(m30_sl[-20:], b) if len(m30_sl) >= 20 else None
+            m30_fvg  = fvg(m30_sl, b, look=20)
+            m30_obs  = breakers(m30_sl, b)
+            m30_cd, m30_cc = choch_seq(m30_sl)
+            m30_bonus = 0; m30_bdg = []
+
+            if m30_bias == b:
+                m30_bonus += 10; m30_bdg.append("M30-Trend✓")
+                m30_conf["bias_ok"] = True
+            if m30_liq:
+                m30_bonus += 12; m30_bdg.append("M30-{}".format(m30_liq["label"].replace(" ✓","")))
+            if m30_fvg:
+                m30_bonus += 8;  m30_bdg.append("M30-FVG✓")
+            if m30_obs:
+                m30_bonus += 8;  m30_bdg.append("M30-OB✓")
+            if m30_cc >= 2:
+                m30_bonus += 7;  m30_bdg.append("M30-CHoCH✓")
+
+            m30_conf["score"]  = m30_bonus
+            m30_conf["badges"] = m30_bdg
+            m30_conf["ok"]     = m30_bonus >= 10
+            m30_conf["details"] = " · ".join(m30_bdg) if m30_bdg else "pas de setup M30"
+            if m30_conf["ok"]:
+                sc = min(sc + m30_bonus, 115)
+            elif not m30_conf["bias_ok"]:
+                sc = max(0, sc - 8)  # M30 contraire → pénalité légère
+
+        # ── Alias m5_conf → m30_conf pour compatibilité downstream ─
+        m5_conf = m30_conf  # renommé pour compatibilité structure signal
+        m5_raw  = m30       # pour pattern_score_m5
+
+        # ── Patterns visuels sur TF d'entrée ──────────────────────
+        pat_bonus, pat_badges = pattern_score_m5(etf, b)
         if pat_bonus > 0:
             sc = min(sc + pat_bonus, 115)
 
-        # ── M1 bonus (ultra-précision optionnelle) ────────────────
-        m1 = fetch_c(m["sym"], "1m", "2d")
-        if m1 and len(m1) >= 5:
-            m1_bias, _, _ = detect_bias(m1[-30:] if len(m1) >= 30 else m1)
-            if m1_bias == b:
-                sc = min(sc + 8, 115)
+        # ── M5 bonus optionnel (précision entrée) ─────────────────
+        m1 = None  # M1 supprimé — entrée sur M15/M30 uniquement
 
         # ── Mémoire IA ────────────────────────────────────────────
         _tmp_badges = []
@@ -1701,10 +2680,20 @@ def agent_analyze(m, score_min, news_ok, q):
         a_pct = a / (lp + 0.0001)
         s_min = score_min + (m.get("vol", 3) - 3) * 2
 
-        # ── Priorité paire ────────────────────────────────────────
+        # ── Priorité paire + filtre Tier ─────────────────────────
         prio = MARKET_PRIORITY.get(m["name"], 0)
         if prio > 0:
             sc = min(sc + prio, 115)
+
+        # ── Filtre setups selon Tier du marché ────────────────────
+        # Tier 3 : ne garder que les setups les plus fiables
+        if market_name not in TIER1_MARKETS and market_name not in TIER2_MARKETS:
+            # Tier 3 : filtrer pa_setups — garder seulement les autorisés
+            pa_setups = [(name, score) for name, score in pa_setups
+                         if name in TIER3_SETUPS_ALLOWED or name.startswith("CHoCH") or
+                         name.startswith("Sweep") or name.startswith("EQ")]
+            # Score minimum plus élevé pour Tier 3
+            s_min = max(s_min, s_min + 8)  # +8 pts requis pour Tier 3
 
         sig = None
 
@@ -1718,23 +2707,29 @@ def agent_analyze(m, score_min, news_ok, q):
             # Construire les badges finaux (ordre logique : HTF → LTF)
             all_badges = [liq["label"]]
             if in_ote:              all_badges.append("OTE ✓")
-            if fvg_z:               all_badges.append("FVG M15 ✓")
-            if cc2 >= 2:            all_badges.append("CHoCHx{} H1 ✓".format(cc2))
-            all_badges.extend(m5_conf["badges"])     # badges M5 inline
+            if fvg_z:               all_badges.append("FVG {} ✓".format(entry_tf_name))
+            if cc2 >= 2:            all_badges.append("CHoCHx{} H4 ✓".format(cc2))
+            # H4 : confirmations sur le TF principal
+            if h4_conf_badge:       all_badges.append("H4 {} ✓".format(h4_conf_badge))
+            if h4_amd_badge:        all_badges.append(h4_amd_badge)
+            for pa_name in h4_pa_badges: all_badges.append("H4·{}".format(pa_name))
+            # Entrée M15/M30
+            if conf_badge:          all_badges.append("{} {}".format(entry_tf_name, conf_badge))
+            if amd_badge:           all_badges.append(amd_badge)
+            for pa_name, _ in pa_setups[:2]:  all_badges.append(pa_name)
+            all_badges.extend(m30_conf["badges"])    # badges M30
             if pat_badges:          all_badges.extend(pat_badges)
             if fund_badge:          all_badges.append(fund_badge)
             if mem_badge:           all_badges.append(mem_badge)
             if mode == "SCALP":     all_badges.append("⚡ SCALP")
-            if m1 and len(m1) >= 5: all_badges.append("M1✓")
 
             # Tag timeframe selon confirmations disponibles
-            # H1 = tendance de fond (interne), entrée = M5 max M15
-            if m5_conf["ok"]:
-                tf_parts = ["M5", "M15"]
-            else:
-                tf_parts = ["M15"]
-            if m1 and len(m1) >= 5: tf_parts.append("M1")
-            tf_tag = "+".join(tf_parts)  # ex: "M5+M15" ou "M15"
+            # H4 = tendance de fond, entrée = M15 (ou M30 fallback)
+            tf_parts = [entry_tf_name]           # "M15" ou "M30"
+            if m30_conf["ok"] and entry_tf_name == "M15":
+                tf_parts.append("M30")           # M30 confirme aussi
+            tf_parts.append("H4")               # tendance de fond
+            tf_tag = "+".join(tf_parts)          # ex: "M15+M30+H4"
 
             dp = 2 if e > 1000 else (3 if e > 10 else 5)
             f  = lambda v: round(v, dp)
@@ -1811,9 +2806,7 @@ def agent_analyze(m, score_min, news_ok, q):
             if bbs and sc >= s_min:
                 reason = "RR<{:.1f}".format(rr_min)
             elif not bbs:
-                reason = "No OB M15"
-            elif not m5_conf["ok"]:
-                reason = "M5 non aligné ({})".format(m5_conf["details"])
+                reason = "No OB {}".format(entry_tf_name)
             else:
                 reason = "Score {}/{}".format(sc, s_min)
             q.put({"name": m["name"], "cat": m["cat"], "found": False,
@@ -1875,8 +2868,8 @@ def _trade_reason(sig):
     if "Fakeout ICT" in b: parts.append("fakeout ICT")
     if "Macro" in b:  parts.append("alignement macro")
     bt = sig.get("btype","")
-    if bt: parts.insert(0, "biais H1 ({})".format(bt))
-    return "  +  ".join(parts) if parts else "OB M15 + structure H1"
+    if bt: parts.insert(0, "biais H4 ({})".format(bt))
+    return "  +  ".join(parts) if parts else "OB M15 + structure H4"
 
 def _score_bar(sc):
     filled = round(sc / 10)
@@ -1915,7 +2908,7 @@ def fmt_pro(s, news, sl_label):
 
     # ── Bloc M5 (nouveau v11) ─────────────────────────────────────
     m5_conf  = s.get("m5_conf", {})
-    tf_tag   = s.get("tf_tag", "M15+H1")
+    tf_tag   = s.get("tf_tag", "M15+H4")
     m5_ok    = m5_conf.get("ok", False)
     m5_det   = m5_conf.get("details", "—")
     if m5_ok:
@@ -2117,7 +3110,7 @@ def fmt_scan(results, news, scan_t, sl_l, sm, nb):
                 )
                 lines.append(
                     "│    📊 {} │ M5 {} {}".format(
-                        s.get("tf_tag", "M15+H1"), m5_ico, m5.get("details", "")
+                        s.get("tf_tag", "M15+H4"), m5_ico, m5.get("details", "")
                     )
                 )
                 lines.append("│")
@@ -2370,7 +3363,12 @@ def _scan_inner():
     sigs = [(r["signal"], "{}-{}-{}-{}".format(r["signal"]["name"], r["signal"]["side"], ds, hs))
             for r in results if r["found"]]
     with _sent_lk: sigs = [(s, k) for s, k in sigs if k not in _sent]
-    sigs.sort(key=lambda x: -x[0]["score"])
+    # Tri : Tier 1 (Gold/BTC) toujours en tête, puis par score
+    def sig_priority(item):
+        s, k = item
+        tier_bonus = 1000 if s["name"] in TIER1_MARKETS else (500 if s["name"] in TIER2_MARKETS else 0)
+        return -(tier_bonus + s["score"])
+    sigs.sort(key=sig_priority)
 
 
 
@@ -2406,30 +3404,44 @@ def _scan_inner():
         msg_p       = fmt_pro(sig, news_lbl, sl_l)
         msg_teasing = fmt_signal_teasing(sig)
 
-        # ── Image du signal ──────────────────────────────────────────
-        chart_img = None
+        # ── Images du signal ─────────────────────────────────────────
+        chart_img_pro  = None   # chart complet → VIP
+        chart_img_free = None   # chart flouté  → FREE
         try:
             m_obj = next((x for x in MARKETS if x["name"]==sig["name"]), None)
             m15_c = fetch_c(m_obj["sym"], "15m", "3d") if m_obj else None
-            chart_img = generate_signal_chart(sig, m15_c)
+            chart_img_pro  = generate_signal_chart(sig, m15_c)
+            chart_img_free = generate_teasing_chart(sig, m15_c)
         except: pass
 
-        # ── Groupe FREE → teasing uniquement (aucun niveau) ─────────
+        # ── Boutons invitation PRO ────────────────────────────────────
         ref_admin = "https://t.me/{}?start={}".format(BOT_USER, ADMIN_ID)
-        if chart_img:
-            r = tg_send_photo(CHANNEL_ID, chart_img, caption=msg_teasing[:1024])
-        else:
-            r = tg_send(CHANNEL_ID, msg_teasing,
-                        kb={"inline_keyboard": [
-                            [{"text": "💵 Payer 10$/mois",      "url": ref_admin}],
-                            [{"text": "🤝 Parrainer 10 amis",   "url": ref_admin}],
-                            [{"text": "📢 Partager ce groupe",   "url": FREE_GROUP_LINK},
-                             {"text": "👑 Groupe VIP",           "url": VIP_GROUP_LINK}],
-                        ]})
+        kb_pro_invite = {"inline_keyboard": [
+            [{"text": "💵 Payer 10$/mois — Accès immédiat", "url": ref_admin}],
+            [{"text": "🤝 Parrainer 10 amis → 7j PRO offerts", "url": ref_admin}],
+            [{"text": "📢 Partager le groupe",  "url": FREE_GROUP_LINK},
+             {"text": "👑 Rejoindre VIP",       "url": VIP_GROUP_LINK}],
+        ]}
 
-        # ── Groupe VIP → 1 seul message : signal PRO complet ────────
-        if chart_img:
-            tg_send_photo(VIP_CH, chart_img, caption=msg_p[:1024])
+        # ── Groupe FREE → image floutée + message teasing + boutons ──
+        if chart_img_free:
+            r = tg_send_photo(CHANNEL_ID, chart_img_free, caption=msg_teasing[:1024])
+            # Envoyer les boutons en message séparé si photo envoyée
+            if r.get("ok"):
+                unlock_msg = (
+                    "\U0001f446 <b>Niveaux masqu\u00e9s \u2014 r\u00e9serv\u00e9s aux membres PRO</b>\n\n"
+                    "\U0001f513 D\u00e9bloque l'acc\u00e8s pour recevoir :\n"
+                    "  \U0001f3af Entr\u00e9e \u00b7 TP \u00b7 SL exacts\n"
+                    "  \U0001f4ca Score ICT complet\n"
+                    "  \u26a1 Jusqu'\u00e0 10 signaux/jour"
+                )
+                tg_send(CHANNEL_ID, unlock_msg, kb=kb_pro_invite)
+        else:
+            r = tg_send(CHANNEL_ID, msg_teasing, kb=kb_pro_invite)
+
+        # ── Groupe VIP → chart PRO complet + signal détaillé ─────────
+        if chart_img_pro:
+            tg_send_photo(VIP_CH, chart_img_pro, caption=msg_p[:1024])
         else:
             tg_send(VIP_CH, msg_p)
 
@@ -2539,7 +3551,7 @@ def broadcast_new_version():
                 "   Les entrées H1 nécessitent trop de marge\n"
                 "   et exposent à des pertes importantes.\n\n"
                 "🔍 <b>Chaque signal inclut désormais :</b>\n"
-                "  • Biais H1 (tendance fond)\n"
+                "  • Biais H4 (tendance fond)\n"
                 "  • Confirmation liquidité (sweep / EQH-EQL)\n"
                 "  • Entrée précise M5 ou M15\n"
                 "  • Order Block + FVG validés\n\n"
@@ -2738,7 +3750,7 @@ def send_welcome(uid, uname):
     tg_send(uid,
         "🤖 <b>AlphaBot PRO v21 — Signaux ICT/SMC</b>\n"+"═"*22+"\n\n"
         "📡 20 marchés : Forex · Or · BTC · Indices · Pétrole\n"
-        "🧠 ICT/SMC · Tendance H1 · Entrée M5/M15\n"
+        "🧠 ICT/SMC · Tendance H4 · Entrée M5/M15\n"
         "🕐 Session : <b>{}</b>\n\n"
         "✅ Plan: <b>{}</b>\n\nSélectionne une option ↓".format(
             sl_l, "PRO" if p else "FREE"),
@@ -4137,49 +5149,101 @@ def find_swings(c, n=5):
     return H, L
 
 
+# ── Messages de motivation variés (rotation aléatoire) ─────────────
+_MOTIVATION_MSGS = [
+    (
+        "🔥 <b>CE SIGNAL ÉTAIT POUR TOI... MAIS PAS ENCORE !</b>\n\n"
+        "Les membres PRO viennent de recevoir un signal complet\n"
+        "avec entrée, TP, SL et analyse ICT complète.\n\n"
+        "⏳ <i>Pendant que tu lis ceci, le trade est peut-être déjà en profit.</i>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "💡 <b>La différence entre FREE et PRO :</b>\n"
+        "  FREE → tu vois qu'un signal existe\n"
+        "  PRO  → tu reçois TOUT pour trader maintenant\n\n"
+        "🚀 <b>Passe PRO aujourd'hui pour seulement 10$/mois</b>"
+    ),
+    (
+        "📊 <b>SIGNAL ENVOYÉ AUX MEMBRES PRO !</b>\n\n"
+        "🟢 Direction · 🎯 Entrée exacte · ✅ TP/SL\n"
+        "💰 Estimation gains · 🧠 Score ICT · 📈 Badges\n\n"
+        "❌ <i>Version gratuite : signal masqué</i>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "💎 <b>Pourquoi passer PRO ?</b>\n\n"
+        "✅ Jusqu'à 10 signaux/jour (vs 1 en gratuit)\n"
+        "✅ Analyse ICT/SMC complète (OB, FVG, CRT, SB...)\n"
+        "✅ Alertes immédiates sans délai\n"
+        "✅ Rapports quotidiens + hebdomadaires\n\n"
+        "💵 <b>10$ USDT/mois — accès immédiat</b>"
+    ),
+    (
+        "⚡ <b>ALERTE SIGNAL — ACCÈS PRO REQUIS</b>\n\n"
+        "Un setup haute probabilité vient d'être détecté\n"
+        "par notre IA ICT/SMC v21.\n\n"
+        "🧠 <i>Score de confiance : élevé</i>\n"
+        "🕐 <i>Validité limitée dans le temps</i>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🏆 <b>REJOINS LES TRADERS PRO !</b>\n\n"
+        "👥 Des dizaines de membres profitent déjà\n"
+        "de nos signaux chaque jour.\n\n"
+        "🎯 <b>3 façons de rejoindre :</b>\n"
+        "  1️⃣ 💵 10$/mois via USDT → /pay\n"
+        "  2️⃣ 🤝 Parrainer 10 amis → 7j PRO offerts\n"
+        "  3️⃣ 📢 Partager le groupe (preuves à @leaderOdg)"
+    ),
+    (
+        "💰 <b>TU MANQUES DES PROFITS CHAQUE JOUR !</b>\n\n"
+        "Exemple avec ce signal :\n"
+        "  📦 Lot 0.01 → +$2 à +$8 par trade\n"
+        "  📦 Lot 0.10 → +$20 à +$80 par trade\n"
+        "  📦 Lot 1.00 → +$200 à +$800 par trade\n\n"
+        "⚠️ <i>Ces chiffres sont des estimations passées.\n"
+        "Le trading comporte des risques. Not financial advice.</i>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🔑 <b>Débloque l'accès PRO maintenant :</b>\n"
+        "  → /pay (10$ USDT/mois)\n"
+        "  → Contacte @leaderOdg\n"
+        "  → Rejoins le groupe VIP :"
+    ),
+    (
+        "🌍 <b>SIGNAL ACTIF EN CE MOMENT !</b>\n\n"
+        "Notre algorithme ICT/SMC vient de détecter\n"
+        "un setup sur ce marché.\n\n"
+        "Les membres PRO ont déjà reçu :\n"
+        "  🟢 Le sens du trade (BUY/SELL)\n"
+        "  📍 Le niveau d'entrée précis\n"
+        "  🎯 Les targets TP1 et TP2\n"
+        "  🛡️ Le stop loss optimal\n"
+        "  📊 L'analyse complète\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "⏰ <b>Chaque minute compte en trading.\n"
+        "Rejoins le PRO et ne rate plus rien !</b>"
+    ),
+]
+
 def fmt_signal_teasing(s):
     """
-    Message teasing pour le groupe GRATUIT.
-    Indique la paire UNIQUEMENT — aucun sens (BUY/SELL), aucun niveau TP/SL/entry.
-    Suivi d'un CTA 3 options pour passer PRO/VIP.
+    Message teasing amélioré pour le groupe GRATUIT.
+    Rotation aléatoire parmi 5 messages de motivation.
+    Image du signal envoyée avec boutons d'invitation PRO.
     """
-    emo  = CAT_EMO.get(s["cat"], "📊")
+    emo       = CAT_EMO.get(s["cat"], "📊")
     ref_admin = "https://t.me/{}?start={}".format(BOT_USER, ADMIN_ID)
 
-    teasing = (
-        "📡 <b>SIGNAL détecté — {name}</b>  {emo}\n"
-        + "═" * 22 + "\n\n"
-        "Un signal sur <b>{name}</b> vient d'être envoyé\n"
-        "aux membres <b>PRO / VIP</b> avec :\n"
-        "  ✅ Direction (BUY/SELL)\n"
-        "  🎯 Prix d'entrée exact\n"
-        "  📊 TP · SL · Score ICT\n"
-        "  💵 Gains estimés par lot\n\n"
-        "⏳ <i>Tu aurais pu prendre ce trade !</i>\n\n"
-        "━" * 22 + "\n"
-        "👑 <b>REJOINS LA VERSION PRO — 3 FAÇONS :</b>\n\n"
-        "1️⃣ <b>Payer l'abonnement</b>\n"
-        "   💵 10$ USDT/mois → accès immédiat\n"
-        "   👉 /pay ou contacte @leaderOdg\n\n"
-        "2️⃣ <b>Parrainer des amis</b>\n"
-        "   🔗 Partage ton lien de parrainage\n"
-        "   📸 10 personnes → <b>7 jours PRO gratuits</b>\n"
-        "   📸 30 personnes → <b>1 mois PRO gratuit</b>\n"
-        "   👉 Envoie la preuve à @leaderOdg\n\n"
-        "3️⃣ <b>Partager ce groupe</b>\n"
-        "   📢 Partage à 10–30 personnes minimum\n"
-        "   📸 Envoie les captures à @leaderOdg\n"
-        "   🎁 Accès VIP activé manuellement\n\n"
-        "━" * 22 + "\n"
-        "🔗 Lien du groupe à partager :\n"
-        "<code>{free_link}</code>\n\n"
-        "🤖 AlphaBot PRO  ·  @leaderOdg_bot"
-    ).format(
-        name=s["name"], emo=emo,
-        ref_admin=ref_admin,
-        free_link=FREE_GROUP_LINK,
-    )
-    return teasing
+    # Rotation aléatoire du message de motivation
+    motivation = random.choice(_MOTIVATION_MSGS)
+
+    header = (
+        "📡 <b>SIGNAL DÉTECTÉ — {name}</b>  {emo}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    ).format(name=s["name"], emo=emo)
+
+    footer = (
+        "\n\n━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🔗 Partage ce groupe : <code>{free_link}</code>\n"
+        "🤖 <b>AlphaBot PRO</b>  ·  @leaderodg_bot"
+    ).format(free_link=FREE_GROUP_LINK)
+
+    return header + motivation + footer
 
 
 def fmt_signal_free(s, news, sl):
@@ -4923,28 +5987,18 @@ def get_adaptive_score_min():
         "WEEKEND":   +8,   # Week-end = volatile
     }.get(sn, 0)
 
-    # Ajustement selon le régime de marché
-    regime_adj = {
-        "TRENDING_BULL": -3,  # Tendance claire → plus facile
-        "TRENDING_BEAR": -3,
-        "ACCUMULATION":  -1,
-        "RANGING":       +2,  # Range → plus de faux signaux
-        "VOLATILE":      +8,  # Volatile → exiger plus de confirmations
-        "CRISIS":        +20, # Crise → quasi stop
-    }.get("RANGING", 0)  # régime fixe (Binance IA supprimé)
+    final = base + session_adj
 
-    final = base + session_adj + regime_adj
-
-    # Plancher adaptatif : plus permissif en Kill Zone, plus strict en RANGING/CRISIS
+    # Plancher adaptatif : plus permissif en Kill Zone, plus strict hors session
     if sn in ("LONDON_KZ", "NY_KZ"):
-        floor, ceil = 82, 93   # KZ = meilleure probabilité → seuil abaissé
+        floor, ceil = 82, 93
     elif sn in ("OVERLAP", "NY", "LONDON"):
         floor, ceil = 85, 95
     else:
         floor, ceil = 88, 97   # Asie / OFF / Weekend → plus strict
 
-    log("INFO", clr("Score min adaptatif: {} (base:{} sess:{:+d} regime:{:+d})".format(
-        final, base, session_adj, regime_adj), "d"))
+    log("INFO", clr("Score min adaptatif: {} (base:{} sess:{:+d})".format(
+        final, base, session_adj), "d"))
     return max(floor, min(ceil, final))
 
 
@@ -6740,24 +7794,21 @@ def startup():
     print(clr("  ╚══════════════════════════════════════════════════╝","b","c")+"\n")
     db_init()
     db_register(ADMIN_ID,"leaderOdg"); db_pro(ADMIN_ID,"ADMIN_AUTO",days=None)
-    log("INFO",clr("Init données Binance...","c"))
     # Message de démarrage en arrière-plan — ne bloque pas le serveur HTTP
     def _notify():
         try:
+            sn_, sm_, sl_l_, wknd_ = get_session()
+            sm_real_ = get_adaptive_score_min()
+            sess_str = "🌍 <b>Week-end : crypto uniquement !</b>" if wknd_ else "📈 Session active : <b>{}</b>".format(sl_l_)
             tg_send(ADMIN_ID,
-                "🤖 <b>AlphaBot PRO v10 — DÉMARRÉ !</b>\n\n"
-                "⚡  actif\n"
-                "🕐 {}  🎯 Score min : <b>{}</b>\n"
+                "🤖 <b>AlphaBot PRO v21.5 — EN LIGNE !</b>\n\n"
                 "{}\n"
-                "🌍 Régime IA : <b>{}</b>\n"
-                "🏆 Challenge : <b>{:.4f}$</b> → {:.0f}$\n"
+                "🎯 Score min : <b>{}</b>\n"
                 "📡 FREE {}/j  ·  PRO {}/j\n\n"
                 "✅ Bot actif — répond aux commandes\n"
                 "🛠 /admin pour le panel".format(
-                    sl_l, sm,
-                    "🌍 <b>Week-end : crypto uniquement !</b>" if wknd else "📈 Session : {}".format(sl_l),
-                    FREE_LIMIT, PRO_LIMIT),
-                kb=kb_reply())   # ← envoie le clavier au démarrage
+                    sess_str, sm_real_, FREE_LIMIT, PRO_LIMIT),
+                kb=kb_reply())
         except Exception as e:
             log("WARN", "notify startup: {}".format(e))
     threading.Thread(target=_notify, daemon=True).start()
@@ -6926,5 +7977,4 @@ def main():
 
 if __name__=="__main__":
     main()
-
 
