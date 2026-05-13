@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """
 AlphaBot PRO v21.2.0 — Agent IA Adaptatif + Validateur Dual-AI
@@ -3533,8 +3532,13 @@ def _scan_inner():
     if int(hs)%6==0 and ds+hs!=getattr(_scan_inner,"_lr",""):
         _scan_inner._lr=ds+hs; threading.Thread(target=relance_inactifs,daemon=True).start()
     threading.Thread(target=check_open_sigs,daemon=True).start()
-    # Vérifier fin de session → rapport automatique
-    # Session end reports désactivés — rapport soir uniquement
+
+    # ── Message motivation + image → groupe gratuit (07h 10h 13h 16h 19h UTC) ──
+    _MOTIV_HOURS = {7, 10, 13, 16, 19}
+    _motiv_key = ds + hs
+    if int(hs) in _MOTIV_HOURS and _motiv_key != getattr(_scan_inner, "_last_motiv", ""):
+        _scan_inner._last_motiv = _motiv_key
+        threading.Thread(target=send_auto_motivation, daemon=True).start()
 
 def broadcast_new_version():
     """Envoie un message de mise à jour à TOUS les utilisateurs avec leur lien de parrainage."""
@@ -3577,6 +3581,177 @@ def broadcast_new_version():
             log("WARN", "broadcast_v17 uid={}: {}".format(fuid, e))
     log("INFO", clr("Broadcast v17 → {} membres ({} ok, {} fail)".format(count, ok, fail), "b", "g"))
     tg_send(ADMIN_ID, "📢 <b>Broadcast v17 OK</b>\n✅ {} envoyés  ·  ❌ {} échecs".format(ok, fail))
+
+# ══════════════════════════════════════════════════════════════════
+#  MOTIVATION AUTOMATIQUE — Groupe gratuit avec image illustration
+#  Envoyé à 07h, 10h, 13h, 16h, 19h UTC (sessions actives)
+#  Images Unsplash trading + message ICT/SMC brandé @leaderOdg
+# ══════════════════════════════════════════════════════════════════
+
+_TRADING_IMAGES_URLS = [
+    "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?w=800",
+    "https://images.unsplash.com/photo-1640340434855-6084b1f4901c?w=800",
+    "https://images.unsplash.com/photo-1590283603385-17ffb3a7f29f?w=800",
+    "https://images.unsplash.com/photo-1535320903710-d993d3d77d29?w=800",
+    "https://images.unsplash.com/photo-1460925895917-afdab827c52f?w=800",
+    "https://images.unsplash.com/photo-1559526324-4b87b5e36e44?w=800",
+    "https://images.unsplash.com/photo-1579621970563-ebec7560ff3e?w=800",
+    "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?w=800",
+    "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?w=800",
+]
+
+_AUTO_MOTIVATIONS = [
+    (
+        "💪 <b>Le marché offre des opportunités CHAQUE JOUR.</b>\n\n"
+        "Le trader qui se prépare gagne.\n"
+        "Celui qui attend le moment parfait rate tout.\n\n"
+        "📊 Mes signaux ICT/SMC scannent 20 marchés en temps réel.\n"
+        "London Kill Zone et NY Kill Zone = les meilleures sessions.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🎯 <b>Restez disciplinés. Les profits suivent.</b>\n\n"
+        "❓ Questions ou dépôt : @leaderOdg\n"
+        "💰 Ouvrir compte Exness ↓"
+    ),
+    (
+        "🎯 <b>Discipline + Patience = Profit.</b>\n\n"
+        "Ne chassez pas le marché.\n"
+        "Laissez le marché venir à vous.\n\n"
+        "📐 <b>Ma méthode ICT/SMC :</b>\n"
+        "✅ Tendance de fond sur H4\n"
+        "✅ Entrée sur M15 après sweep de liquidité\n"
+        "✅ RR minimum 2:1 sur chaque signal\n"
+        "✅ Validation IA avant envoi\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "📲 <b>Partage ce groupe à tes amis traders !</b>\n\n"
+        "❓ Aide débutant ou compte Exness : @leaderOdg"
+    ),
+    (
+        "🔥 <b>Les grands traders ne gagnent pas PLUS,\n"
+        "ils perdent MOINS.</b>\n\n"
+        "Toujours respecter son SL.\n"
+        "Le capital est sacré.\n\n"
+        "⚡ <b>London + NY Kill Zone = les sessions OR.</b>\n"
+        "C'est là que les institutions bougent.\n"
+        "C'est là que mes signaux sont les plus précis.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "💎 <b>Signaux 100% gratuits dans ce groupe.</b>\n"
+        "Version PRO disponible : 10$ USDT/mois\n\n"
+        "❓ Contacte-moi : @leaderOdg"
+    ),
+    (
+        "💎 <b>Chaque signal est une opportunité calculée.</b>\n\n"
+        "RR 2:1 minimum. Votre capital est sacré.\n\n"
+        "📊 <b>Ce que vous recevez gratuitement ici :</b>\n"
+        "✅ Signaux H4/M15 ICT/SMC en temps réel\n"
+        "✅ Or · BTC · Forex · Indices · Pétrole\n"
+        "✅ Analyse fondamentale live 24h/24\n"
+        "✅ Suivi TP/SL automatique\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🚀 <b>Prêt à trader avec un vrai compte ?</b>\n"
+        "Dépôt minimum 10$ sur Exness ↓\n"
+        "Je t'accompagne personnellement : @leaderOdg"
+    ),
+    (
+        "🧠 <b>ICT/SMC : les institutions laissent des traces.</b>\n\n"
+        "Breaker Blocks · CHoCH · FVG · Sweep\n"
+        "Apprenez à les lire — les profits suivent.\n\n"
+        "📈 <b>Ma stratégie en 3 étapes :</b>\n"
+        "1️⃣ Identifier le biais H4 (direction du fond)\n"
+        "2️⃣ Attendre la prise de liquidité M15\n"
+        "3️⃣ Entrer sur la bougie de confirmation\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "📲 <b>Partage ce groupe à tes amis traders !</b>\n"
+        "Plus on est nombreux, plus on progresse ensemble 💪\n\n"
+        "❓ Formation ou dépôt : @leaderOdg"
+    ),
+    (
+        "🚀 <b>Consistency beats luck.</b>\n\n"
+        "Suivez le plan.\n"
+        "Respectez les niveaux.\n"
+        "Les profits suivront.\n\n"
+        "⏰ <b>Sessions à surveiller aujourd'hui :</b>\n"
+        "🇬🇧 London Kill Zone  : 07h-10h UTC\n"
+        "⚡ Pre-NY Overlap    : 12h-13h UTC\n"
+        "🇺🇸 New York KZ      : 13h-16h UTC\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🎯 <b>Mes signaux arrivent automatiquement.</b>\n"
+        "Soyez prêts quand ça arrive.\n\n"
+        "❓ Questions : @leaderOdg  ·  💰 Exness ↓"
+    ),
+    (
+        "⚡ <b>Le trading n'est pas un jeu de hasard.</b>\n\n"
+        "C'est une science que j'applique chaque jour\n"
+        "avec la méthode ICT/SMC.\n\n"
+        "🥇 <b>Mes marchés prioritaires :</b>\n"
+        "🥇 XAU/USD (Or) — volatilité + spreads bas\n"
+        "₿  BTC/USD — 7j/7 week-ends inclus\n"
+        "💱 EUR/USD · GBP/USD · USD/JPY\n"
+        "📈 NAS100 · SPX500 · US30\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "💵 <b>Prêt à déposer 10$ et commencer ?</b>\n"
+        "Utilise mon lien Exness ↓\n"
+        "Je t'aide à tout configurer : @leaderOdg"
+    ),
+]
+
+_motiv_idx = [0]
+
+def send_auto_motivation():
+    """
+    Envoie un message de motivation avec image illustration
+    vers le groupe gratuit. Rotation séquentielle des messages.
+    Heures : 07h, 10h, 13h, 16h, 19h UTC.
+    """
+    try:
+        sn, sm, sl_l, wknd = get_session()
+
+        # Choisir le message (rotation séquentielle)
+        idx = _motiv_idx[0] % len(_AUTO_MOTIVATIONS)
+        _motiv_idx[0] += 1
+        msg_text = _AUTO_MOTIVATIONS[idx]
+
+        # Choisir une image aléatoire
+        img_url = random.choice(_TRADING_IMAGES_URLS)
+
+        # Boutons
+        ref_admin = "https://t.me/{}?start={}".format(BOT_USER, ADMIN_ID)
+        kb = {"inline_keyboard": [
+            [{"text": "💰 Ouvrir compte Exness", "url": BROKER_LINK}],
+            [{"text": "✉️ Contacter @leaderOdg", "url": "https://t.me/leaderOdg"},
+             {"text": "👑 Groupe VIP",            "url": VIP_GROUP_LINK}],
+            [{"text": "📢 Partager ce groupe",    "url": FREE_GROUP_LINK},
+             {"text": "💠 Devenir PRO",            "url": ref_admin}],
+        ]}
+
+        # Télécharger l'image et envoyer avec caption
+        try:
+            import urllib.request as _ur
+            ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+            req = _ur.Request(img_url, headers={"User-Agent": "Mozilla/5.0"})
+            with _ur.urlopen(req, context=ctx, timeout=10) as resp:
+                img_bytes = resp.read()
+            # Caption limitée à 1024 chars pour Telegram sendPhoto
+            caption = msg_text[:1020]
+            r = tg_send_photo(CHANNEL_ID, img_bytes, caption=caption)
+            if r.get("ok"):
+                # Envoyer les boutons en message séparé après la photo
+                tg_send(CHANNEL_ID,
+                    "📲 <b>Partage à tes amis traders !</b>\n"
+                    "Plus on est nombreux, plus on progresse ensemble 💪\n\n"
+                    "❓ Aide ou dépôt : @leaderOdg",
+                    kb=kb)
+                log("INFO", clr("Motivation auto → groupe gratuit ✅ (img + msg)", "g"))
+                return
+        except Exception as img_err:
+            log("WARN", "Motivation image téléchargement: {}".format(img_err))
+
+        # Fallback : message texte seul si image échoue
+        tg_send(CHANNEL_ID, msg_text, kb=kb)
+        log("INFO", clr("Motivation auto → groupe gratuit ✅ (texte seul)", "g"))
+
+    except Exception as e:
+        log("WARN", "send_auto_motivation: {}".format(e))
+
 
 def do_backup():
     try:
@@ -6224,69 +6399,72 @@ def kb_admin_back(): return {"inline_keyboard":[[{"text":"◀️ Panel Admin","c
 # ══════════════════════════════════════════════════════
 def send_welcome(uid, uname, ref_by=0):
     db_register(uid, uname, ref_by, tg_fn=tg_send)
-    tg_sticker(uid, STK_W)
     p = is_pro(uid); sn, sm, sl_l, wknd = get_session()
     sm = get_adaptive_score_min()
-    wknd_note = "\n🌍 <b>Week-end : BTC/ETH uniquement !</b>" if wknd else ""
     name_str = "@" + uname if uname else "Trader"
+    wknd_note = "\n🌍 <b>Week-end : BTC/ETH uniquement !</b>" if wknd else ""
 
-    # ── MSG 1 : Résultats réels pour prouver la valeur ────────────────
+    # ── MSG 1 : Présentation personnelle leaderOdg ────────────────────
     try:
         total, pro, sigs, pays, g1d = db_global_stats()
     except Exception:
         total, pro, sigs, pays, g1d = 0, 0, 0, 0, 0.0
-
-    # Winrate estimé depuis les signaux du jour
     try:
         st = daily_stats()
         wins = st.get("wins", 0); n = st.get("n", 0)
-        wr = int(wins / n * 100) if n > 0 else 78   # fallback 78% si pas encore de data
+        wr = int(wins / n * 100) if n > 0 else 78
         g_day = st.get("g1", 0.0)
     except Exception:
         wr, g_day = 78, g1d
 
     tg_send(uid,
-        "🔥 <b>RÉSULTATS ALPHABOT — PROUVÉS EN LIVE</b>\n" + "═"*24 + "\n\n"
-        "📊 <b>Performances du bot :</b>\n\n"
-        "  ✅  Winrate actuel    →  <b>{}%</b>\n"
-        "  📡  Signaux générés  →  <b>{:,}</b> au total\n"
-        "  💰  Gains lot 1.0    →  <b>+{:.0f}$ aujourd'hui</b>\n"
-        "  👥  Traders actifs   →  <b>{:,} membres</b>\n\n"
-        "━"*24 + "\n"
-        "📈 <b>Exemple de trade récent :</b>\n"
-        "  🥇 XAUUSD  BUY  ·  RR 1:3.2\n"
-        "  Entrée 2 318.50  →  TP 2 328.40 ✅\n"
-        "  <i>+9.9 pips  ·  +99$ lot 1.0  ·  Score 91/100</i>\n\n"
-        "━"*24 + "\n"
-        "⚡ <b>ICT/SMC + IA Claude/Gemini</b>\n"
-        "  Validation double IA avant chaque signal\n"
-        "  Score hybride ≥ {}/100 requis\n\n"
-        "🎯 <i>Ces résultats sont générés automatiquement\n"
-        "   24h/24 — 20 marchés scannés en parallèle.</i>".format(wr, sigs, g_day, total, sm))
+        "👋 <b>Bienvenue {} !</b>\n\n"
+        "Je suis <b>@leaderOdg</b> 🎯\n"
+        "Trader professionnel ICT/SMC — je partage mes signaux\n"
+        "<b>100% GRATUITEMENT</b> à tous les membres.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "📊 <b>CE QUE TU REÇOIS GRATUITEMENT :</b>\n"
+        "✅ Mes signaux personnels H4/M15 — Forex, Or, BTC\n"
+        "✅ Analyse fondamentale live 24h/24\n"
+        "✅ Suivi TP/SL + mises à jour en temps réel\n"
+        "✅ Formation trading pour débutants\n"
+        "✅ BTC analysé 7j/7, week-ends inclus\n\n"
+        "📈 Winrate actuel : <b>{}%</b>  ·  {} membres actifs".format(
+            name_str, wr, total))
 
-    time.sleep(2)
+    time.sleep(1)
 
-    # ── MSG 2 : Bienvenue + motivation vers le réel ───────────────────
-    plan_line = "🎁 <b>ESSAI PRO {} JOURS OFFERT !</b> ✅".format(TRIAL_DAYS) if p else "🔓 FREE actif → /pay pour débloquer"
+    # ── MSG 2 : Onboarding clair + appel à l'action ───────────────────
+    plan_line = "💠 <b>PRO ACTIF</b> ✅ — Max {}/j".format(PRO_LIMIT) if p else "🔓 FREE actif → /pay pour débloquer PRO"
     tg_send(uid,
-        "🤖 <b>Bienvenue {} !</b>\n".format(name_str) + "═"*22 + "\n\n"
-        "📌 <b>Plan :</b> {}\n"
-        "🕐 <b>Session :</b> {}{}  ·  Score min : <b>{}</b>\n\n".format(plan_line, sl_l, wknd_note, sm) +
-        "═"*22 + "\n"
-        "🚀 <b>3 étapes pour commencer :</b>\n\n"
-        "  1️⃣  Ouvre un compte broker\n"
-        "      👉 <a href='{}'>Exness — lien officiel</a>\n"
-        "      <i>(recommandé : dépôt min 10$, levier 1:500)</i>\n\n"
-        "  2️⃣  Teste d'abord sur <b>compte DEMO</b>\n"
-        "      Suis les signaux pendant 7 jours\n"
-        "      Observe les résultats par toi-même ✅\n\n"
-        "  3️⃣  Passe en <b>compte RÉEL</b> quand tu es prêt\n"
-        "      Même bot, mêmes signaux — argent réel 💰\n\n"
-        "═"*22 + "\n"
-        "💠 PRO = max {}/j  ·  🤝 {} filleuls = {} mois PRO\n"
-        "📖 /guide  ·  /pay  ·  /signaux ↓".format(
-            BROKER_LINK, PRO_LIMIT, REF_TARGET, REF_MONTHS),
-        kb=kb_reply())
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🚀 <b>COMMENT DÉMARRER ?</b>\n\n"
+        "<b>① Tu débutes dans le trading ?</b>\n"
+        "👉 Écris-moi directement : @leaderOdg\n"
+        "   Je t'accompagne personnellement\n"
+        "   pour bien prendre mes signaux.\n\n"
+        "<b>② Tu veux trader avec un vrai compte ?</b>\n"
+        "👉 Ouvre ton compte via mon lien Exness\n"
+        "   (dépôt min <b>10$</b> — je t'aide à configurer)\n\n"
+        "<b>③ Tu es déjà trader expérimenté ?</b>\n"
+        "👉 Signaux VIP = <b>10$ USDT TRC20 / mois</b>\n"
+        "   Contacte-moi : @leaderOdg\n"
+        "   Accès immédiat après paiement ✅\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "💳 <b>PAIEMENTS :</b> USDT TRC20 / Exness\n\n"
+        "{}\n"
+        "🕐 Session : {}{}  ·  Score min : <b>{}</b>\n\n"
+        "📲 <b>Partage à tes amis traders !</b> 🙏\n\n"
+        "<i>⚠️ Mes signaux sont des analyses personnelles, "
+        "pas des conseils financiers.</i>".format(
+            plan_line, sl_l, wknd_note, sm),
+        kb={"inline_keyboard": [
+            [{"text": "💰 Ouvrir mon compte Exness", "url": BROKER_LINK}],
+            [{"text": "✉️ Contacter @leaderOdg",    "url": "https://t.me/leaderOdg"},
+             {"text": "📌 Groupe gratuit",            "url": FREE_GROUP_LINK}],
+            [{"text": "📡 Mes Signaux",  "callback_data": "signals"},
+             {"text": "💠 Devenir PRO", "callback_data": "pro"}],
+        ]})
 
 def send_start(uid, uname, ref_by=0):
     """Alias for send_welcome."""
@@ -7399,72 +7577,73 @@ def handle_new_group_member(uid, uname, first_name):
     """
     Nouveau membre rejoint le groupe :
     1. Enregistrement en base (via track_user)
-    2. Message de bienvenue + essai PRO
-    3. Invitation groupe VIP
-    4. Notification admin (via track_user)
+    2. Message de bienvenue brandé @leaderOdg — personnel, pas de mention système
+    3. Notification admin
     """
     try:
-        track_user(uid, uname, first_name)  # enregistrement + notif admin
-        name = "@" + uname if uname else first_name or "Trader"
+        track_user(uid, uname, first_name)
+        fname = first_name or ("@" + uname if uname else "Trader")
 
-        # ── Message de bienvenue ────────────────────────────────
+        # ── Message de bienvenue — ton de @leaderOdg, pas de bot visible ──
         tg_send(uid,
             "👋 <b>Bienvenue {} !</b>\n\n"
-            "🤖 <b>AlphaBot PRO</b> — Signaux trading automatiques\n\n"
-            "✅ {} signaux/jour GRATUITS\n"
-            "📊 Forex · Or · BTC · Indices · Pétrole\n"
-            "🎯 Entrée + TP + SL automatiques\n"
-            "⚡  actif\n\n"
-            "🎁 <b>Essai PRO {} jours offert !</b>\n\n"
-            "👉 Clique /start pour commencer".format(
-                name, FREE_LIMIT, TRIAL_DAYS),
-            kb={{"inline_keyboard": [[
-                {{"text": "🚀 Démarrer", "callback_data": "start"}},
-                {{"text": "💎 Voir PRO",  "callback_data": "pro"}},
-            ]]}})
-
-        # ── Recommandation groupe VIP ───────────────────────────
-        time.sleep(2)
-        try:
-            vip_link = "https://t.me/+{}".format(
-                VIP_CH.lstrip("-100") if VIP_CH.startswith("-100") else VIP_CH.lstrip("-"))
-        except:
-            vip_link = "https://t.me/leaderOdg"
-        tg_send(uid,
-            "🏆 <b>GROUPE VIP AlphaBot</b>\n\n"
-            "Rejoins notre groupe VIP pour :\n"
-            "✅ Signaux en temps réel\n"
-            "✅ Analyses de marché en direct\n"
-            "✅ Discussion avec @leaderOdg\n\n"
-            "❓ Questions sur la méthode ICT/SMC ?\n"
-            "👉 Contacte directement @leaderOdg\n\n"
-            "📩 Demande d'accès au groupe VIP :",
-            kb={{"inline_keyboard": [[
-                {{"text": "👑 Rejoindre le groupe VIP",
-                  "url": "https://t.me/leaderOdg"}},
-            ]]}})
+            "Je suis <b>@leaderOdg</b> 🎯\n"
+            "Trader professionnel ICT/SMC — je partage mes signaux\n"
+            "<b>100% GRATUITEMENT</b> à tous les membres de ce groupe.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "📊 <b>CE QUE TU REÇOIS GRATUITEMENT :</b>\n"
+            "✅ Mes signaux personnels M15/H4 — Forex, Or, BTC\n"
+            "✅ Analyse fondamentale live 24h/24\n"
+            "✅ Suivi TP/SL + mises à jour en temps réel\n"
+            "✅ Formation trading pour débutants\n"
+            "✅ BTC analysé 7j/7, week-ends inclus\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "🚀 <b>COMMENT DÉMARRER ?</b>\n\n"
+            "<b>① Tu débutes dans le trading ?</b>\n"
+            "👉 Écris-moi directement : @leaderOdg\n"
+            "   Je t'accompagne personnellement.\n\n"
+            "<b>② Tu veux trader avec un vrai compte ?</b>\n"
+            "👉 Ouvre ton compte via <b>mon lien Exness</b> (dépôt min 10$)\n"
+            "   Je t'aide à tout configurer 🎯\n\n"
+            "<b>③ Tu es déjà trader expérimenté ?</b>\n"
+            "👉 Signaux VIP = <b>10$ USDT TRC20 / mois</b>\n"
+            "   Contacte-moi : @leaderOdg\n"
+            "   Accès immédiat après paiement ✅\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "💳 <b>PAIEMENTS ACCEPTÉS :</b>\n"
+            "✅ USDT TRC20\n"
+            "✅ Compte Exness via mon lien d'affiliation\n\n"
+            "📲 <b>Partage ce groupe à tes amis traders !</b> 🙏\n\n"
+            "<i>⚠️ Le trading comporte des risques. "
+            "Mes signaux sont des analyses personnelles, "
+            "pas des conseils financiers.</i>".format(fname),
+            kb={"inline_keyboard": [
+                [{"text": "💰 Ouvrir mon compte Exness", "url": BROKER_LINK}],
+                [{"text": "✉️ Me contacter — @leaderOdg", "url": "https://t.me/leaderOdg"}],
+                [{"text": "📌 Groupe signaux gratuits",   "url": FREE_GROUP_LINK}],
+            ]})
 
         # ── Notification admin ──────────────────────────────────
         total, pro, _, _, _ = global_stats()
         tg_send(ADMIN_ID,
             "👤 <b>NOUVEAU MEMBRE</b>\n\n"
-            "🆔 ID     : <code>{}</code>\n"
+            "🆔 ID      : <code>{}</code>\n"
             "👤 Username: {}\n"
             "📋 Prénom  : {}\n\n"
-            "👥 Total membres : <b>{}</b>  (PRO: {})\n\n"
+            "👥 Total : <b>{}</b>  (PRO: {})\n\n"
             "Actions rapides ↓".format(
                 uid,
                 "@" + uname if uname else "—",
                 first_name or "—",
                 total, pro),
-            kb={{"inline_keyboard": [[
-                {{"text": "💠 Activer PRO",
-                  "callback_data": "adm_pro_{}".format(uid)}},
-                {{"text": "💬 Contacter",
-                  "url": "tg://user?id={}".format(uid)}},
-            ]]}})
+            kb={"inline_keyboard": [[
+                {"text": "💠 Activer PRO",
+                 "callback_data": "adm_pro_{}".format(uid)},
+                {"text": "💬 Contacter",
+                 "url": "tg://user?id={}".format(uid)},
+            ]]})
 
-        log("INFO", clr("Nouveau membre: @{} ID:{} — notif admin envoyée".format(
+        log("INFO", clr("Nouveau membre: @{} ID:{} — welcome leaderOdg envoyé".format(
             uname or "?", uid), "g"))
     except Exception as e:
         log("WARN", "handle_new_group_member: {}".format(e))
@@ -7797,8 +7976,9 @@ color:#fff;font-size:14px;cursor:pointer;font-weight:700}
 # ══════════════════════════════════════════════════════
 def startup():
     print("\n"+clr("  ╔══════════════════════════════════════════════════╗","b","c"))
-    print(clr("  ║  AlphaBot PRO v10 — IA Adaptative · ICT/SMC  ║","b","c"))
-    print(clr("  ║  Forex·Métaux·Crypto·Indices · ICT/SMC · ⚡Mode   ║","b","c"))
+    print(clr("  ║   @leaderOdg — Signaux ICT/SMC PRO              ║","b","c"))
+    print(clr("  ║   Tendance H4 · Entrée M15 · IA Claude+Gemini   ║","b","c"))
+    print(clr("  ║   20 marchés · FREE/PRO/VIP · USDT TRC20        ║","b","c"))
     print(clr("  ╚══════════════════════════════════════════════════╝","b","c")+"\n")
     db_init()
     db_register(ADMIN_ID,"leaderOdg"); db_pro(ADMIN_ID,"ADMIN_AUTO",days=None)
@@ -7913,11 +8093,12 @@ def main():
             sn, sm, sl_l, wknd = get_session()
             sm_real = get_adaptive_score_min()
             tg_send(ADMIN_ID,
-                "🤖 <b>AlphaBot PRO v21 — EN LIGNE !</b>\n\n"
+                "🎯 <b>@leaderOdg Bot — EN LIGNE !</b>\n\n"
                 "✅ DB initialisée\n"
                 "✅ Port {} ouvert\n"
                 "✅ Webhook configuré\n"
                 "🧠 IA Validator : {}  [mode: {}]\n\n"
+                "📊 Tendance : <b>H4</b>  ·  Entrée : <b>M15</b>\n"
                 "🕐 Session : <b>{}</b>  Score min : <b>{}</b>\n"
                 "📡 FREE {}/j  ·  PRO {}/j\n"
                 "🛠 /admin pour le panel".format(
@@ -7985,4 +8166,5 @@ def main():
 
 if __name__=="__main__":
     main()
+
 
