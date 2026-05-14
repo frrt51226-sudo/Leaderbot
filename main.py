@@ -1,4 +1,5 @@
 
+
 #!/usr/bin/env python3
 """
 AlphaBot PRO v20 — Agent IA Adaptatif + Validateur Dual-AI
@@ -44,29 +45,1463 @@ except ImportError:
     _GEMINI_OK = False
     print("[GeminiAI] ⚠️  pip install google-genai pour le fallback Gemini")
 
-# ── AMD Fusion Engine — H4/H1 Bias + M15 AMD Entry ─────────────────
-try:
-    from amd_fusion_engine import (
-        amd_agent_analyze,
-        fmt_amd_badge_block,
-        fmt_signal_amd_vip,
-        AMD_PRIORITY_MARKETS,
-    )
-    _AMD_OK = True
-    print("[AMD] ✅ AMD Fusion Engine chargé — Gold/BTC priorité absolue")
-except ImportError as _amd_err:
-    _AMD_OK = False
-    print("[AMD] ⚠️  amd_fusion_engine.py introuvable — fallback agent_analyze")
-    # Fallback : fonctions vides si module absent
-    def amd_agent_analyze(m, sm, news_ok, q): agent_analyze(m, sm, news_ok, q)
-    def fmt_amd_badge_block(s): return ""
-    def fmt_signal_amd_vip(s, news, sl): return fmt_signal_pro(s, news, sl)
-    AMD_PRIORITY_MARKETS = {}
+# ══════════════════════════════════════════════════════════════════════════
+#  SMC FUSION ENGINE v21 FINAL — INTÉGRÉ DIRECTEMENT
+#  Smart Money Concepts · AMD · ICT · DXY · Risk Sentiment
+#  Daily → H4 → H1 → M15  |  OB · FVG · Breaker · Sweep · CHoCH
+# ══════════════════════════════════════════════════════════════════════════
 
-    _GEMINI_OK = True
-except ImportError:
-    _GEMINI_OK = False
-    print("[GeminiAI] ⚠️  pip install google-genai pour le fallback Gemini")
+SMC_PRIORITY_MARKETS = {
+    "XAUUSD": {"priority": 20, "label": "🥇 GOLD",   "rr_min": 2.5, "boost": 15, "strict": True},
+    "BTCUSD": {"priority": 18, "label": "₿ BTC",     "rr_min": 2.0, "boost": 12, "strict": True},
+    "XAGUSD": {"priority": 10, "label": "🪙 SILVER",  "rr_min": 2.0, "boost": 8,  "strict": False},
+    "NAS100": {"priority": 9,  "label": "📈 NAS100",  "rr_min": 2.0, "boost": 6,  "strict": False},
+    "GBPJPY": {"priority": 8,  "label": "💱 GBPJPY",  "rr_min": 2.5, "boost": 5,  "strict": False},
+    "EURUSD": {"priority": 6,  "label": "💱 EURUSD",  "rr_min": 2.0, "boost": 3,  "strict": False},
+    "USDJPY": {"priority": 6,  "label": "💱 USDJPY",  "rr_min": 2.0, "boost": 3,  "strict": False},
+    "GBPUSD": {"priority": 5,  "label": "💱 GBPUSD",  "rr_min": 2.0, "boost": 2,  "strict": False},
+    "SPX500": {"priority": 7,  "label": "📈 SPX500",  "rr_min": 2.0, "boost": 4,  "strict": False},
+    "US30":   {"priority": 7,  "label": "📈 US30",    "rr_min": 2.0, "boost": 4,  "strict": False},
+}
+
+# Seuils de score
+SMC_SCORE_GOLD_BTC  = 72   # Seuil strict Gold/BTC
+SMC_SCORE_DEFAULT   = 68   # Autres marchés
+SMC_CONFIRMATIONS   = 4    # Minimum 4/6 confirmations obligatoires
+SMC_RR_MIN          = 2.0  # RR minimum global
+
+# Poids par phase AMD
+AMD_PHASE_WEIGHTS = {
+    "DISTRIBUTION": 30,   # Phase idéale — entrée post-manipulation
+    "MANIPULATION": 20,   # Sweep en cours — préparer l'entrée
+    "ACCUMULATION":  5,   # Trop tôt
+    "UNKNOWN":       0,
+}
+
+# Corrélation DXY (coefficient : positif = direct, négatif = inverse)
+DXY_CORRELATION = {
+    "EURUSD": -0.85,  # Inverse fort
+    "GBPUSD": -0.80,  "AUDUSD": -0.75, "NZDUSD": -0.70,
+    "USDJPY":  0.70,  "USDCHF":  0.75, "USDCAD":  0.65,
+    "XAUUSD": -0.80,  # Or vs DXY inverse
+    "XAGUSD": -0.75,  "BTCUSD": -0.40,
+    "NAS100": -0.50,  "SPX500": -0.45, "US30": -0.40,
+    "GBPJPY":  0.20,  "EURJPY":  0.15, "AUDJPY": 0.25,
+    "USOIL":  -0.50,
+}
+
+# ══════════════════════════════════════════════════════════════════════════
+#  MODULE 1 : CORRÉLATION FONDAMENTALE
+# ══════════════════════════════════════════════════════════════════════════
+
+# Cache DXY global
+_dxy_cache = {"price": None, "bias": "NEUTRAL", "ts": 0, "score": 0}
+_dxy_lock  = threading.Lock()
+
+def fetch_dxy_bias() -> dict:
+    """
+    Récupère le DXY (Dollar Index) via Yahoo Finance.
+    Détermine le biais USD : STRONG / WEAK / NEUTRAL
+    Retourne un dict avec price, bias, change_pct, score (-10 à +10)
+    """
+    with _dxy_lock:
+        if time.time() - _dxy_cache["ts"] < 300:  # Cache 5 min
+            return dict(_dxy_cache)
+
+    result = {"price": None, "bias": "NEUTRAL", "change_pct": 0.0,
+              "score": 0, "label": "DXY: N/A", "ts": time.time()}
+    try:
+        url = "https://query1.finance.yahoo.com/v8/finance/chart/DX-Y.NYB?interval=1h&range=2d"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read())
+        chart  = data["chart"]["result"][0]
+        closes = chart["indicators"]["quote"][0]["close"]
+        closes = [c for c in closes if c is not None]
+        if len(closes) < 5:
+            return result
+
+        price  = closes[-1]
+        prev   = closes[-2]
+        open_d = closes[-24] if len(closes) >= 24 else closes[0]  # ~24h ago
+        chg    = (price - open_d) / open_d * 100 if open_d else 0
+
+        # Tendance court terme (4h)
+        avg4h = sum(closes[-4:]) / 4
+        # Tendance moyen terme (24h)
+        avg24 = sum(closes[-24:]) / min(24, len(closes))
+
+        # Score DXY : -10 (très faible) à +10 (très fort)
+        score = 0
+        if price > avg4h:  score += 2
+        else:              score -= 2
+        if price > avg24:  score += 3
+        else:              score -= 3
+        if chg > 0.3:      score += 3
+        elif chg < -0.3:   score -= 3
+        if prev and price > prev: score += 2
+        else:              score -= 2
+        score = max(-10, min(10, score))
+
+        if score >= 4:
+            bias  = "STRONG"
+            label = "💪 DXY Fort ({:.2f})".format(price)
+        elif score <= -4:
+            bias  = "WEAK"
+            label = "📉 DXY Faible ({:.2f})".format(price)
+        else:
+            bias  = "NEUTRAL"
+            label = "➡️ DXY Neutre ({:.2f})".format(price)
+
+        result = {"price": round(price, 3), "bias": bias,
+                  "change_pct": round(chg, 3), "score": score,
+                  "label": label, "ts": time.time()}
+        with _dxy_lock:
+            _dxy_cache.update(result)
+
+    except Exception as e:
+        _LSMC.debug("DXY fetch error: {}".format(e))
+
+    return result
+
+
+def get_dxy_signal_alignment(market_name: str, signal_side: str, dxy: dict) -> dict:
+    """
+    Vérifie si le signal est aligné avec le DXY.
+    Retourne un dict avec aligned (bool), boost (int), reason (str)
+    """
+    corr = DXY_CORRELATION.get(market_name, 0.0)
+    dxy_bias = dxy.get("bias", "NEUTRAL")
+    dxy_score = dxy.get("score", 0)
+
+    if dxy_bias == "NEUTRAL" or abs(corr) < 0.3:
+        return {"aligned": True, "boost": 0, "reason": "DXY neutre — pas de filtre"}
+
+    # Exemple : EURUSD corr=-0.85, DXY STRONG → signal SELL aligné
+    # EURUSD corr=-0.85, DXY WEAK → signal BUY aligné
+    if corr < -0.5:  # Corrélation inverse forte (EUR, GBP, Gold)
+        if dxy_bias == "STRONG":
+            aligned = signal_side == "SELL"
+        else:
+            aligned = signal_side == "BUY"
+    elif corr > 0.5:  # Corrélation directe forte (JPY, CHF paires USD)
+        if dxy_bias == "STRONG":
+            aligned = signal_side == "BUY"
+        else:
+            aligned = signal_side == "SELL"
+    else:
+        return {"aligned": True, "boost": 0, "reason": "Corrélation faible"}
+
+    boost = int(abs(corr) * abs(dxy_score) * 0.8) if aligned else -int(abs(corr) * abs(dxy_score) * 1.2)
+    reason = "{} aligné DXY {}".format("✅" if aligned else "❌", dxy_bias)
+
+    return {"aligned": aligned, "boost": boost, "reason": reason}
+
+
+def get_risk_sentiment() -> dict:
+    """
+    Évalue le sentiment Risk-On / Risk-Off via proxy BTC et Or.
+    Risk-On  : BTC monte, Gold stable/baisse → favorable aux actifs risqués
+    Risk-Off : BTC baisse, Gold monte → favorable à l'Or, safe-havens
+    """
+    result = {"mode": "NEUTRAL", "label": "➡️ Sentiment neutre", "score": 0}
+    try:
+        # Proxy BTC (rapide — via Binance public)
+        url = "https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            btc_data = json.loads(r.read())
+        btc_chg = float(btc_data.get("priceChangePercent", 0))
+
+        score = 0
+        if btc_chg > 2:    score += 4    # BTC fort = Risk-On
+        elif btc_chg > 0.5: score += 2
+        elif btc_chg < -2:  score -= 4   # BTC faible = Risk-Off
+        elif btc_chg < -0.5: score -= 2
+
+        if score >= 3:
+            mode  = "RISK_ON"
+            label = "🟢 Risk-On (BTC +{:.1f}%)".format(btc_chg)
+        elif score <= -3:
+            mode  = "RISK_OFF"
+            label = "🔴 Risk-Off (BTC {:.1f}%)".format(btc_chg)
+        else:
+            mode  = "NEUTRAL"
+            label = "➡️ Neutre (BTC {:.1f}%)".format(btc_chg)
+
+        result = {"mode": mode, "label": label, "score": score, "btc_chg": btc_chg}
+    except Exception as e:
+        _LSMC.debug("Risk sentiment error: {}".format(e))
+
+    return result
+
+
+def fundamental_filter(market_name: str, signal_side: str,
+                        dxy: dict, risk: dict) -> dict:
+    """
+    Filtre fondamental global.
+    Retourne : valid (bool), score_adjust (int), reason (str), labels (list)
+    """
+    labels    = []
+    score_adj = 0
+    blocks    = []
+
+    # ── DXY Alignment ───────────────────────────────────────────────────
+    dxy_align = get_dxy_signal_alignment(market_name, signal_side, dxy)
+    labels.append(dxy_align["reason"])
+    score_adj += dxy_align["boost"]
+    if not dxy_align["aligned"] and abs(dxy.get("score", 0)) >= 6:
+        blocks.append("DXY contre-tendance forte")
+
+    # ── Risk Sentiment ───────────────────────────────────────────────────
+    risk_mode = risk.get("mode", "NEUTRAL")
+    labels.append(risk.get("label", ""))
+
+    # Gold/Silver favorisé en Risk-Off
+    if market_name in ("XAUUSD", "XAGUSD"):
+        if risk_mode == "RISK_OFF" and signal_side == "BUY":
+            score_adj += 8; labels.append("✅ Risk-Off → Gold favorisé")
+        elif risk_mode == "RISK_ON" and signal_side == "BUY":
+            score_adj -= 5; labels.append("⚠️ Risk-On → Gold sous pression")
+
+    # BTC/Crypto favorisé en Risk-On
+    if market_name in ("BTCUSD", "ETHUSD"):
+        if risk_mode == "RISK_ON" and signal_side == "BUY":
+            score_adj += 6; labels.append("✅ Risk-On → Crypto favorisé")
+        elif risk_mode == "RISK_OFF" and signal_side == "BUY":
+            score_adj -= 4; labels.append("⚠️ Risk-Off → Crypto sous pression")
+
+    # Indices
+    if market_name in ("NAS100", "SPX500", "US30"):
+        if risk_mode == "RISK_ON" and signal_side == "BUY":
+            score_adj += 5; labels.append("✅ Risk-On → Indices haussiers")
+        elif risk_mode == "RISK_OFF" and signal_side == "SELL":
+            score_adj += 5; labels.append("✅ Risk-Off → Short indices")
+
+    valid  = len(blocks) == 0
+    reason = " | ".join(labels[:3])
+    return {"valid": valid, "score_adjust": score_adj,
+            "reason": reason, "blocks": blocks, "labels": labels}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  MODULE 2 : BIAIS DAILY (Tendance du jour)
+# ══════════════════════════════════════════════════════════════════════════
+
+def detect_daily_bias(candles_daily: list) -> dict:
+    """
+    Analyse le Daily pour le biais institutionnel du jour.
+    Retourne : bias, strength (0-5), bos_level, key_levels, description
+    """
+    result = {
+        "bias": "NEUTRAL", "strength": 0, "bos_level": 0,
+        "key_high": 0, "key_low": 0, "ema_bias": "NEUTRAL",
+        "description": "Daily insuffisant", "daily_score": 0,
+    }
+
+    if not candles_daily or len(candles_daily) < 10:
+        return result
+
+    c = candles_daily
+    closes = [x["c"] for x in c]
+    n = len(closes)
+
+    # ── EMA 21 Daily ────────────────────────────────────────────────────
+    ema21 = sum(closes[max(0, n-21):]) / min(21, n)
+    price = closes[-1]
+
+    # ── Structure Daily (HH/LL) ─────────────────────────────────────────
+    def pivot_highs(lookback=3):
+        pivots = []
+        for i in range(lookback, len(c) - lookback):
+            if all(c[i]["h"] >= c[j]["h"] for j in range(i-lookback, i+lookback+1) if j != i):
+                pivots.append((i, c[i]["h"]))
+        return pivots[-5:] if pivots else []
+
+    def pivot_lows(lookback=3):
+        pivots = []
+        for i in range(lookback, len(c) - lookback):
+            if all(c[i]["l"] <= c[j]["l"] for j in range(i-lookback, i+lookback+1) if j != i):
+                pivots.append((i, c[i]["l"]))
+        return pivots[-5:] if pivots else []
+
+    ph = pivot_highs(); pl = pivot_lows()
+
+    bias = "NEUTRAL"; strength = 0; bos_level = 0
+
+    # EMA bias
+    if price > ema21:
+        bias = "BULLISH"; strength += 1; result["ema_bias"] = "BULLISH"
+    elif price < ema21:
+        bias = "BEARISH"; strength += 1; result["ema_bias"] = "BEARISH"
+
+    # HH/HL ou LL/LH
+    if len(ph) >= 2 and len(pl) >= 2:
+        hh = ph[-1][1] > ph[-2][1]
+        hl = pl[-1][1] > pl[-2][1]
+        ll = pl[-1][1] < pl[-2][1]
+        lh = ph[-1][1] < ph[-2][1]
+        if hh and hl:
+            bias = "BULLISH"; bos_level = ph[-1][1]; strength += 2
+        elif ll and lh:
+            bias = "BEARISH"; bos_level = pl[-1][1]; strength += 2
+        elif hh or hl:
+            if bias != "BEARISH": bias = "BULLISH"; strength += 1
+        elif ll or lh:
+            if bias != "BULLISH": bias = "BEARISH"; strength += 1
+
+    # Confirmation dernière bougie Daily
+    last = c[-1]
+    bull_body = last["c"] > last["o"] and (last["c"] - last["o"]) > (last["h"] - last["l"]) * 0.5
+    bear_body = last["c"] < last["o"] and (last["o"] - last["c"]) > (last["h"] - last["l"]) * 0.5
+    if bull_body and bias == "BULLISH": strength = min(strength + 1, 5)
+    if bear_body and bias == "BEARISH": strength = min(strength + 1, 5)
+
+    key_high = ph[-1][1] if ph else c[-1]["h"]
+    key_low  = pl[-1][1] if pl else c[-1]["l"]
+
+    desc = "{} Daily — force {}/5{}".format(
+        "🐂" if bias == "BULLISH" else "🐻" if bias == "BEARISH" else "➡️",
+        strength,
+        " · BOS {:.5f}".format(bos_level) if bos_level else ""
+    )
+
+    result.update({
+        "bias": bias, "strength": strength, "bos_level": round(bos_level, 5),
+        "key_high": round(key_high, 5), "key_low": round(key_low, 5),
+        "description": desc, "daily_score": strength * 4,
+    })
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  MODULE 3 : BIAIS H4 + SUPPLY/DEMAND ZONES
+# ══════════════════════════════════════════════════════════════════════════
+
+def detect_h4_bias_and_zones(candles_h4: list) -> dict:
+    """
+    H4 : Biais macro + Supply/Demand zones institutionnelles.
+    Retourne : bias, trend_score, supply_zones, demand_zones, bos_level
+    """
+    result = {
+        "bias": "NEUTRAL", "trend_score": 0, "bos_level": 0,
+        "bias_type": "WEAK", "supply_zones": [], "demand_zones": [],
+        "h4_score": 0,
+    }
+
+    if not candles_h4 or len(candles_h4) < 20:
+        return result
+
+    c = candles_h4
+    closes = [x["c"] for x in c]
+    n = len(closes)
+
+    # ── EMA 20/50 H4 ────────────────────────────────────────────────────
+    ema20 = sum(closes[max(0, n-20):]) / min(20, n)
+    ema50 = sum(closes[max(0, n-50):]) / min(50, n)
+    price = closes[-1]
+
+    # ── Pivots H4 ───────────────────────────────────────────────────────
+    def ph_h4(n=3):
+        pivots = []
+        for i in range(n, len(c)-n):
+            if all(c[i]["h"] >= c[j]["h"] for j in range(i-n, i+n+1) if j != i):
+                pivots.append((i, c[i]["h"], c[i]["l"]))  # index, high, low (base OB)
+        return pivots[-6:] if pivots else []
+
+    def pl_h4(n=3):
+        pivots = []
+        for i in range(n, len(c)-n):
+            if all(c[i]["l"] <= c[j]["l"] for j in range(i-n, i+n+1) if j != i):
+                pivots.append((i, c[i]["h"], c[i]["l"]))
+        return pivots[-6:] if pivots else []
+
+    ph = ph_h4(); pl = pl_h4()
+
+    trend_score = 0; bias = "NEUTRAL"; bos_level = 0; bias_type = "WEAK"
+
+    if price > ema20 > ema50:
+        bias = "BULLISH"; trend_score += 2; bias_type = "EMA"
+    elif price < ema20 < ema50:
+        bias = "BEARISH"; trend_score += 2; bias_type = "EMA"
+    elif price > ema20:
+        bias = "BULLISH"; trend_score += 1; bias_type = "EMA"
+    elif price < ema20:
+        bias = "BEARISH"; trend_score += 1; bias_type = "EMA"
+
+    if len(ph) >= 2 and len(pl) >= 2:
+        hh = ph[-1][1] > ph[-2][1]
+        hl = pl[-1][2] > pl[-2][2]  # using low field
+        ll = pl[-1][2] < pl[-2][2]
+        lh = ph[-1][1] < ph[-2][1]
+        if hh and hl:
+            bias = "BULLISH"; bos_level = ph[-1][1]; trend_score += 2; bias_type = "BOS"
+        elif ll and lh:
+            bias = "BEARISH"; bos_level = pl[-1][2]; trend_score += 2; bias_type = "BOS"
+        elif (hh and ll) or (not hh and hl):
+            bias_type = "CHoCH"; trend_score = max(trend_score - 1, 0)
+
+    # Bougie récente H4 confirmation
+    last3 = c[-3:]
+    bull_b = sum(1 for x in last3 if x["c"] > x["o"])
+    bear_b = sum(1 for x in last3 if x["c"] < x["o"])
+    if bias == "BULLISH" and bull_b >= 2: trend_score = min(trend_score + 1, 5)
+    if bias == "BEARISH" and bear_b >= 2: trend_score = min(trend_score + 1, 5)
+
+    # ── Supply / Demand Zones H4 ────────────────────────────────────────
+    # Supply Zone = sommet pivot haut H4 non encore revisité
+    supply_zones = []
+    demand_zones = []
+    atr_h4 = sum(c[i]["h"] - c[i]["l"] for i in range(-14, 0)) / 14 if len(c) >= 14 else 0
+
+    for idx, hi, lo in ph[-4:]:
+        # Zone pas encore testée (price en dessous)
+        if price < hi - atr_h4 * 0.2:
+            supply_zones.append({
+                "top": round(hi + atr_h4 * 0.1, 5),
+                "bot": round(lo, 5),
+                "strength": 2 if idx >= len(c) - 10 else 1,
+                "type": "SUPPLY_H4",
+            })
+
+    for idx, hi, lo in pl[-4:]:
+        if price > lo + atr_h4 * 0.2:
+            demand_zones.append({
+                "top": round(hi, 5),
+                "bot": round(lo - atr_h4 * 0.1, 5),
+                "strength": 2 if idx >= len(c) - 10 else 1,
+                "type": "DEMAND_H4",
+            })
+
+    h4_score = trend_score * 5  # 0-25
+
+    result.update({
+        "bias": bias, "trend_score": trend_score, "bos_level": round(bos_level, 5),
+        "bias_type": bias_type, "supply_zones": supply_zones,
+        "demand_zones": demand_zones, "h4_score": h4_score,
+    })
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  MODULE 4 : DÉTECTION AMD (H1)
+# ══════════════════════════════════════════════════════════════════════════
+
+def detect_amd_h1(candles_h1: list, candles_m15: list,
+                  bias: str, atr_h1: float) -> dict:
+    """
+    Détecte la phase AMD sur H1/M15 :
+    - Accumulation  : Range tight H1, EQH/EQL présents
+    - Manipulation  : Sweep de liquidité (BSL/SSL/EQH/EQL)
+    - Distribution  : Displacement + CHoCH + FVG post-sweep
+
+    Retourne un dict complet avec phase, confidence, sweep_*, displacement, amd_score
+    """
+    result = {
+        "phase": "UNKNOWN", "confidence": 0,
+        "sweep_level": 0, "sweep_type": None,
+        "displacement": False, "disp_fvg": None, "disp_choch": False,
+        "range_high": 0, "range_low": 0, "in_range": False,
+        "has_eqh": False, "has_eql": False,
+        "amd_score": 0, "description": "—",
+    }
+
+    if not candles_h1 or len(candles_h1) < 15:
+        return result
+    if not candles_m15 or len(candles_m15) < 20:
+        return result
+
+    c_h1  = candles_h1
+    c_m15 = candles_m15
+    price = c_m15[-1]["c"]
+    LOOKBACK_H1 = 10
+    SWEEP_LB    = 20
+
+    # ── ACCUMULATION : Range H1 ─────────────────────────────────────────
+    acc = c_h1[-LOOKBACK_H1:]
+    r_high = max(x["h"] for x in acc)
+    r_low  = min(x["l"] for x in acc)
+    r_range = r_high - r_low
+    r_atr   = atr_h1 if atr_h1 > 0 else r_range / 3
+    is_range = r_range > 0 and r_range < r_atr * 2.5
+
+    result["range_high"] = round(r_high, 5)
+    result["range_low"]  = round(r_low, 5)
+    result["in_range"]   = bool(r_low <= price <= r_high)
+
+    eq_tol = r_range * 0.15
+    has_eqh = sum(1 for x in acc if abs(x["h"] - r_high) < eq_tol) >= 2
+    has_eql = sum(1 for x in acc if abs(x["l"] - r_low) < eq_tol) >= 2
+    result["has_eqh"] = has_eqh
+    result["has_eql"] = has_eql
+
+    # ── MANIPULATION : Sweep M15 ─────────────────────────────────────────
+    sweep_window   = c_m15[-SWEEP_LB:]
+    sweep_detected = False
+    sweep_level    = 0
+    sweep_type     = None
+    sweep_idx      = -1
+
+    for i in range(len(sweep_window) - 2, 0, -1):
+        can = sweep_window[i]
+        lo = can["l"]; hi = can["h"]; cl = can["c"]
+
+        if bias == "BULLISH":
+            wick_dn = r_low - lo
+            if lo < r_low and cl > r_low and wick_dn >= r_atr * 0.15:
+                sweep_detected = True
+                sweep_level    = round(lo, 5)
+                sweep_type     = "EQL_SWEEP" if has_eql else "SSL_SWEEP"
+                sweep_idx      = i; break
+            if has_eql and lo < r_low * (1 - 0.0004) and cl > r_low:
+                sweep_detected = True
+                sweep_level    = round(r_low, 5)
+                sweep_type     = "EQL_SWEEP"
+                sweep_idx      = i; break
+        else:
+            wick_up = hi - r_high
+            if hi > r_high and cl < r_high and wick_up >= r_atr * 0.15:
+                sweep_detected = True
+                sweep_level    = round(hi, 5)
+                sweep_type     = "EQH_SWEEP" if has_eqh else "BSL_SWEEP"
+                sweep_idx      = i; break
+            if has_eqh and hi > r_high * (1 + 0.0004) and cl < r_high:
+                sweep_detected = True
+                sweep_level    = round(r_high, 5)
+                sweep_type     = "EQH_SWEEP"
+                sweep_idx      = i; break
+
+    result["sweep_level"] = sweep_level
+    result["sweep_type"]  = sweep_type
+
+    # ── Score Accumulation ───────────────────────────────────────────────
+    score = 0; desc = []
+    if is_range:
+        score += 10; desc.append("Range H1 ✓")
+    if has_eqh and bias == "BEARISH":
+        score += 10; desc.append("EQH ✓")
+    if has_eql and bias == "BULLISH":
+        score += 10; desc.append("EQL ✓")
+
+    if not sweep_detected:
+        phase = "ACCUMULATION" if score >= 10 else "UNKNOWN"
+        if phase == "ACCUMULATION": desc.append("→ Attente manipulation")
+        result.update({"phase": phase, "confidence": score,
+                       "description": " · ".join(desc) or "Pas de setup",
+                       "amd_score": AMD_PHASE_WEIGHTS.get(phase, 0)})
+        return result
+
+    # ── DISTRIBUTION : Post-Sweep ────────────────────────────────────────
+    score += 20; desc.append("Sweep {} ✓".format(sweep_type or ""))
+
+    displacement = False
+    disp_fvg     = None
+    disp_choch   = False
+    post = sweep_window[sweep_idx:]
+
+    for j in range(1, min(6, len(post))):
+        cd    = post[j]
+        body  = abs(cd["c"] - cd["o"])
+        crange = cd["h"] - cd["l"]
+        if crange > 0 and body / crange >= 0.5 and body >= r_atr * 0.25:
+            correct = (bias == "BULLISH" and cd["c"] > cd["o"]) or \
+                      (bias == "BEARISH" and cd["c"] < cd["o"])
+            if correct:
+                displacement = True
+                # FVG post-displacement
+                if j + 1 < len(post):
+                    c1 = post[j-1]; c3 = post[j+1]
+                    if bias == "BULLISH":
+                        gap = c3["l"] - c1["h"]
+                        if gap > 0:
+                            disp_fvg = {"top": round(c3["l"], 5), "bot": round(c1["h"], 5)}
+                    else:
+                        gap = c1["l"] - c3["h"]
+                        if gap > 0:
+                            disp_fvg = {"top": round(c1["l"], 5), "bot": round(c3["h"], 5)}
+                break
+
+    if len(post) >= 4:
+        post_h = [x["h"] for x in post[-4:]]
+        post_l = [x["l"] for x in post[-4:]]
+        if bias == "BULLISH":
+            disp_choch = post_l[-1] > post_l[0]
+        else:
+            disp_choch = post_h[-1] < post_h[0]
+
+    if displacement:  score += 25; desc.append("Displacement ✓")
+    if disp_choch:    score += 15; desc.append("CHoCH post-sweep ✓")
+    if disp_fvg:      score += 10; desc.append("FVG ✓")
+
+    # Recency bonus
+    recency = len(sweep_window) - 1 - sweep_idx
+    if recency <= 3:   score += 10; desc.append("Sweep récent ✓")
+    elif recency <= 6: score += 5
+
+    phase = "DISTRIBUTION" if displacement and (disp_choch or disp_fvg) else "MANIPULATION"
+    desc.insert(0, "⚡ DISTRIBUTION" if phase == "DISTRIBUTION" else "🎯 MANIPULATION")
+
+    result.update({
+        "phase": phase, "confidence": min(score, 100),
+        "displacement": displacement, "disp_fvg": disp_fvg, "disp_choch": disp_choch,
+        "description": " · ".join(desc),
+        "amd_score": AMD_PHASE_WEIGHTS.get(phase, 0),
+    })
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  MODULE 5 : BOS + CHoCH H1 (Structure de marché)
+# ══════════════════════════════════════════════════════════════════════════
+
+def detect_bos_choch_h1(candles_h1: list, bias: str) -> dict:
+    """
+    Détecte BOS et CHoCH sur H1 pour confirmer le biais AMD.
+    BOS   = Break of Structure (continuation)
+    CHoCH = Change of Character (retournement)
+    Retourne : bos (bool), choch (bool), level, bos_score (0-20)
+    """
+    result = {"bos": False, "choch": False, "level": 0, "bos_type": "—", "bos_score": 0}
+    if not candles_h1 or len(candles_h1) < 10:
+        return result
+
+    c = candles_h1[-20:]  # dernières 20 bougies H1
+    highs = [x["h"] for x in c]
+    lows  = [x["l"] for x in c]
+    closes = [x["c"] for x in c]
+
+    # Pivot haut/bas simplifiés
+    last_sh = max(highs[:-3])   # Swing High récent (hors 3 dernières)
+    last_sl = min(lows[:-3])    # Swing Low récent
+    price   = closes[-1]
+
+    score = 0
+
+    if bias == "BULLISH":
+        # BOS Bullish = price ferme au-dessus du dernier Swing High
+        if price > last_sh:
+            result["bos"]      = True
+            result["level"]    = round(last_sh, 5)
+            result["bos_type"] = "BOS_BULL"
+            score = 20
+        # CHoCH = price ferme en dessous d'un Swing Low précédent (alerte retournement)
+        elif price < last_sl:
+            result["choch"]    = True
+            result["level"]    = round(last_sl, 5)
+            result["bos_type"] = "CHoCH_BEAR"
+            score = 10  # bonus car confirmation de retournement
+
+    else:  # BEARISH
+        if price < last_sl:
+            result["bos"]      = True
+            result["level"]    = round(last_sl, 5)
+            result["bos_type"] = "BOS_BEAR"
+            score = 20
+        elif price > last_sh:
+            result["choch"]    = True
+            result["level"]    = round(last_sh, 5)
+            result["bos_type"] = "CHoCH_BULL"
+            score = 10
+
+    result["bos_score"] = score
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  MODULE 6 : SMC ENTRY M15 (OB · FVG · Breaker · Sweep · CHoCH)
+# ══════════════════════════════════════════════════════════════════════════
+
+def detect_smc_entry_m15(candles_m15: list, bias: str,
+                          amd: dict, atr_m15: float) -> dict:
+    """
+    Analyse complète de l'entrée M15 post-AMD.
+
+    Cherche (dans l'ordre de priorité) :
+    1. Order Block M15 (OB) — dernier OB avant BOS
+    2. Fair Value Gap M15 (FVG) — imbalance post-displacement
+    3. Breaker Block M15 — OB invalidé qui devient support/résistance
+    4. Liquidity Sweep M15 — micro-sweep avant entrée
+    5. CHoCH M15 — changement de structure de confirmation
+    6. Engulfing/Displacement — bougie de confirmation finale
+
+    Retourne : entry_score, confirmations (list), zones, badges
+    """
+    result = {
+        "entry_score": 0, "confirmations": [],
+        "ob_zone": None, "fvg_zone": None,
+        "breaker_zone": None, "supply_zone": None,
+        "choch": False, "liq_sweep": False,
+        "badges": [], "entry_details": "",
+        "smc_count": 0,  # nombre de confirmations SMC actives
+    }
+
+    if not candles_m15 or len(candles_m15) < 20:
+        return result
+
+    c     = candles_m15
+    lp    = c[-1]["c"]
+    score = 0
+    badges = []
+    confs  = []
+
+    # ── 1. ORDER BLOCK M15 ───────────────────────────────────────────────
+    ob_zone = None
+    for i in range(len(c)-2, max(0, len(c)-35), -1):
+        cb = c[i]; ca = c[i+1]
+        if bias == "BULLISH":
+            # Bullish OB = dernière bougie bearish avant impulse bullish
+            if cb["c"] < cb["o"] and ca["c"] > ca["o"] and ca["c"] > cb["h"]:
+                ob_zone = {"top": round(cb["h"], 5), "bot": round(cb["l"], 5), "idx": i}
+                if ob_zone["bot"] <= lp <= ob_zone["top"] * 1.001:
+                    score += 20; badges.append("OB M15 ✅"); confs.append("OB")
+                else:
+                    score += 8;  badges.append("OB M15 (proche)")
+                break
+        else:
+            if cb["c"] > cb["o"] and ca["c"] < ca["o"] and ca["c"] < cb["l"]:
+                ob_zone = {"top": round(cb["h"], 5), "bot": round(cb["l"], 5), "idx": i}
+                if ob_zone["bot"] * 0.999 <= lp <= ob_zone["top"]:
+                    score += 20; badges.append("OB M15 ✅"); confs.append("OB")
+                else:
+                    score += 8;  badges.append("OB M15 (proche)")
+                break
+
+    result["ob_zone"] = ob_zone
+
+    # ── 2. FAIR VALUE GAP M15 (FVG) ────────────────────────────────────
+    fvg_zone = amd.get("disp_fvg")  # FVG hérité de l'AMD
+    if not fvg_zone:
+        for i in range(len(c)-3, max(0, len(c)-30), -1):
+            c1 = c[i]; c3 = c[i+2]
+            if bias == "BULLISH":
+                gap = c3["l"] - c1["h"]
+                if gap > atr_m15 * 0.04:
+                    fvg_zone = {"top": round(c3["l"], 5), "bot": round(c1["h"], 5)}; break
+            else:
+                gap = c1["l"] - c3["h"]
+                if gap > atr_m15 * 0.04:
+                    fvg_zone = {"top": round(c1["l"], 5), "bot": round(c3["h"], 5)}; break
+
+    if fvg_zone:
+        result["fvg_zone"] = fvg_zone
+        f_top = fvg_zone.get("top", 0); f_bot = fvg_zone.get("bot", 0)
+        if f_bot <= lp <= f_top:
+            score += 20; badges.append("FVG M15 ✅"); confs.append("FVG")
+        else:
+            score += 8;  badges.append("FVG M15 (proche)")
+
+    # ── 3. BREAKER BLOCK M15 ───────────────────────────────────────────
+    # Breaker = OB précédent qui a été cassé et devient S/R retourné
+    breaker_zone = None
+    if len(c) >= 30:
+        for i in range(len(c)-5, max(0, len(c)-35), -1):
+            cb = c[i]
+            # Cherche une zone OB ancienne qui a été "breakée" par le prix
+            if bias == "BULLISH":
+                # Ancienne zone de résistance (OB bearish) maintenant support
+                was_resist = cb["c"] > cb["o"]  # bougie bullish = ancienne résistance
+                now_support = lp >= cb["o"] and lp <= cb["h"] * 1.003
+                if was_resist and now_support:
+                    # Vérifier que le prix est passé en-dessous puis remonté (breaké)
+                    passed_through = any(c[j]["l"] < cb["l"] for j in range(i+1, min(i+10, len(c)-1)))
+                    if passed_through:
+                        breaker_zone = {"top": round(cb["h"], 5), "bot": round(cb["o"], 5)}
+                        score += 18; badges.append("Breaker Block ✅"); confs.append("BREAKER")
+                        break
+            else:
+                was_support  = cb["c"] < cb["o"]  # ancienne bougie bearish = ex-support
+                now_resist   = lp >= cb["l"] * 0.997 and lp <= cb["o"]
+                if was_support and now_resist:
+                    passed_through = any(c[j]["h"] > cb["h"] for j in range(i+1, min(i+10, len(c)-1)))
+                    if passed_through:
+                        breaker_zone = {"top": round(cb["o"], 5), "bot": round(cb["l"], 5)}
+                        score += 18; badges.append("Breaker Block ✅"); confs.append("BREAKER")
+                        break
+
+    result["breaker_zone"] = breaker_zone
+
+    # ── 4. LIQUIDITY SWEEP M15 ─────────────────────────────────────────
+    recent = c[-15:]
+    if len(recent) >= 6:
+        prev_l = [x["l"] for x in recent[:-4]]
+        prev_h = [x["h"] for x in recent[:-4]]
+        last4  = recent[-4:]
+        if bias == "BULLISH":
+            sweep_low = min(prev_l)
+            swept = any(x["l"] < sweep_low and x["c"] > sweep_low for x in last4)
+            if swept:
+                score += 15; badges.append("Sweep Liq M15 ✅"); confs.append("SWEEP")
+                result["liq_sweep"] = True
+        else:
+            sweep_high = max(prev_h)
+            swept = any(x["h"] > sweep_high and x["c"] < sweep_high for x in last4)
+            if swept:
+                score += 15; badges.append("Sweep Liq M15 ✅"); confs.append("SWEEP")
+                result["liq_sweep"] = True
+
+    # ── 5. CHoCH M15 ───────────────────────────────────────────────────
+    last10 = c[-10:]
+    if len(last10) >= 6:
+        mid   = len(last10) // 2
+        h_10  = [x["h"] for x in last10]; l_10 = [x["l"] for x in last10]
+        if bias == "BULLISH":
+            if min(l_10[mid:]) > min(l_10[:mid]):
+                score += 15; badges.append("CHoCH M15 ✅"); confs.append("CHoCH")
+                result["choch"] = True
+        else:
+            if max(h_10[mid:]) < max(h_10[:mid]):
+                score += 15; badges.append("CHoCH M15 ✅"); confs.append("CHoCH")
+                result["choch"] = True
+
+    # ── 6. ENGULFING / DISPLACEMENT BOUGIE ─────────────────────────────
+    if len(c) >= 3:
+        lc = c[-1]; pc = c[-2]
+        body_l = abs(lc["c"] - lc["o"])
+        body_p = abs(pc["c"] - pc["o"])
+        correct = (bias == "BULLISH" and lc["c"] > lc["o"]) or \
+                  (bias == "BEARISH" and lc["c"] < lc["o"])
+        if body_l > body_p * 1.2 and correct:
+            score += 10; badges.append("Engulf M15 ✅"); confs.append("ENGULF")
+
+    result.update({
+        "entry_score": min(score, 100),
+        "confirmations": confs,
+        "badges": badges,
+        "entry_details": " · ".join(badges[:5]),
+        "smc_count": len(confs),
+    })
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  MODULE 7 : CALCUL NIVEAUX SL/TP (ICT Method)
+# ══════════════════════════════════════════════════════════════════════════
+
+def compute_levels(c_m15: list, bias: str, amd: dict, entry_m15: dict,
+                   atr_m15: float, market: dict, rr_min: float = 2.0) -> dict:
+    """
+    Calcule entrée, SL, TP basés sur ICT :
+    - Entrée  : current price (ou midpoint FVG/OB)
+    - SL      : sous le sweep / OB low (+ buffer ATR)
+    - TP      : extension ATR × RR (min 2.0, Gold 2.5)
+    Retourne : entry, sl, tp, rr, g001, l001, g01, l01, g1, l1, valid
+    """
+    result = {"valid": False, "entry": 0, "sl": 0, "tp": 0, "rr": 0,
+              "g001": 0, "l001": 0, "g01": 0, "l01": 0, "g1": 0, "l1": 0}
+    if not c_m15 or atr_m15 <= 0:
+        return result
+
+    price = c_m15[-1]["c"]
+    pip   = market.get("pip", 0.0001)
+    entry = price
+
+    # Affiner entrée si on est dans OB ou FVG
+    ob  = entry_m15.get("ob_zone")
+    fvg = entry_m15.get("fvg_zone")
+    if ob and ob["bot"] <= price <= ob["top"]:
+        entry = (ob["top"] + ob["bot"]) / 2
+    elif fvg and fvg["bot"] <= price <= fvg["top"]:
+        entry = (fvg["top"] + fvg["bot"]) / 2
+
+    # SL basé sur sweep level AMD ou OB low
+    sweep_lvl = amd.get("sweep_level", 0)
+    sl_buffer = atr_m15 * 0.25
+
+    if bias == "BULLISH":
+        if sweep_lvl > 0:
+            sl = sweep_lvl - sl_buffer
+        elif ob:
+            sl = ob["bot"] - sl_buffer
+        else:
+            sl = entry - atr_m15 * 1.5
+        sl = round(sl, 5)
+    else:
+        if sweep_lvl > 0:
+            sl = sweep_lvl + sl_buffer
+        elif ob:
+            sl = ob["top"] + sl_buffer
+        else:
+            sl = entry + atr_m15 * 1.5
+        sl = round(sl, 5)
+
+    sl_dist = abs(entry - sl)
+    if sl_dist <= 0:
+        return result
+
+    # TP avec RR minimum
+    tp_dist = sl_dist * rr_min
+    if bias == "BULLISH":
+        tp = round(entry + tp_dist, 5)
+    else:
+        tp = round(entry - tp_dist, 5)
+
+    rr = round(abs(tp - entry) / sl_dist, 1)
+
+    # Calcul gains estimés
+    def pnl(lot_x):
+        return round(abs(tp - entry) / pip * lot_x * 0.1, 2)
+    def loss(lot_x):
+        return round(sl_dist / pip * lot_x * 0.1, 2)
+
+    result = {
+        "valid": True,
+        "entry": round(entry, 5), "sl": round(sl, 5), "tp": round(tp, 5), "rr": rr,
+        "g001": pnl(0.01), "l001": loss(0.01),
+        "g01":  pnl(0.1),  "l01":  loss(0.1),
+        "g1":   pnl(1.0),  "l1":   loss(1.0),
+    }
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  MODULE 8 : SCORE HYBRIDE FINAL
+# ══════════════════════════════════════════════════════════════════════════
+
+def compute_hybrid_score(daily: dict, h4: dict, bos: dict,
+                          amd: dict, entry_m15: dict,
+                          fundamental: dict, market_name: str) -> dict:
+    """
+    Calcule le score hybride final sur 100 :
+    - Daily bias strength    : 0–20
+    - H4 bias                : 0–25
+    - AMD phase              : 0–30
+    - BOS/CHoCH H1           : 0–20
+    - SMC Entry M15          : 0–30 (via smc_count × 5)
+    - Fondamental (DXY+Risk) : -10 à +10
+
+    Retourne : score (0-100), breakdown, verdict
+    """
+    # Composants
+    d_score  = daily.get("daily_score", 0)        # 0-20
+    h4_score = h4.get("h4_score", 0)              # 0-25
+    amd_sc   = amd.get("amd_score", 0)            # 0-30
+    bos_sc   = bos.get("bos_score", 0)            # 0-20
+    # Entry M15 : max 30 pts basé sur le nombre de confirmations SMC
+    smc_cnt  = entry_m15.get("smc_count", 0)
+    entry_sc = min(smc_cnt * 5, 30)               # 0-30
+    fund_adj = fundamental.get("score_adjust", 0) # -10 à +10
+
+    raw = d_score + h4_score + amd_sc + bos_sc + entry_sc + fund_adj
+    score = max(0, min(100, raw))
+
+    # Bonus paire prioritaire
+    mp = SMC_PRIORITY_MARKETS.get(market_name, {})
+    score = min(100, score + mp.get("boost", 0) // 3)
+
+    # Pénalités
+    if daily.get("bias") == "NEUTRAL":   score -= 5   # Pas de biais daily
+    if h4.get("bias")    == "NEUTRAL":   score -= 5   # Pas de biais H4
+    if amd.get("phase")  == "UNKNOWN":   score -= 10  # Pas de phase AMD
+    if amd.get("phase")  == "ACCUMULATION": score -= 5  # Trop tôt
+
+    score = max(0, min(100, score))
+
+    # Alignement H4 ↔ Daily ↔ Signal
+    daily_bias = daily.get("bias", "NEUTRAL")
+    h4_bias    = h4.get("bias", "NEUTRAL")
+    aligned_dh = (daily_bias == h4_bias) and daily_bias != "NEUTRAL"
+    if aligned_dh: score = min(100, score + 5)
+
+    verdict = (
+        "🔥 ÉLITE"    if score >= 90 else
+        "💎 PREMIUM"  if score >= 80 else
+        "✅ SOLIDE"   if score >= 70 else
+        "⚠️ FAIBLE"  if score >= 60 else
+        "❌ REJETÉ"
+    )
+
+    breakdown = {
+        "daily":     d_score,
+        "h4":        h4_score,
+        "amd":       amd_sc,
+        "bos_choch": bos_sc,
+        "entry_smc": entry_sc,
+        "fundamental": fund_adj,
+        "aligned_d_h4": aligned_dh,
+    }
+
+    return {"score": score, "verdict": verdict, "breakdown": breakdown}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  MODULE 9 : AGENT PRINCIPAL — smc_agent_analyze()
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def _resample_h4(candles_h1: list) -> list:
+    """
+    Reconstitue des bougies H4 à partir de bougies H1.
+    Yahoo Finance ne supporte pas l'interval "4h" directement.
+    4 bougies H1 consécutives = 1 bougie H4.
+    """
+    if not candles_h1 or len(candles_h1) < 4:
+        return []
+    result = []
+    for i in range(0, len(candles_h1) - 3, 4):
+        chunk = candles_h1[i:i+4]
+        if len(chunk) < 4:
+            break
+        result.append({
+            "o": chunk[0]["o"],
+            "h": max(c["h"] for c in chunk),
+            "l": min(c["l"] for c in chunk),
+            "c": chunk[-1]["c"],
+        })
+    return result if len(result) >= 5 else []
+
+
+def smc_agent_analyze(market: dict, score_min: int, news_ok: bool,
+                       result_queue: Queue):
+    """
+    Agent SMC complet. Remplace agent_analyze() dans main.py.
+
+    Flux :
+      1. Fetch candles Daily / H4 / H1 / M15
+      2. Daily Bias → H4 Bias+Zones → AMD H1 → BOS/CHoCH H1 → SMC Entry M15
+      3. Fondamental (DXY + Risk sentiment)
+      4. Score hybride → décision
+      5. Calcul SL/TP/RR → signal dans result_queue
+
+    Paramètres attendus dans market :
+      sym (str), name (str), cat (str), pip (float), max_sp (int),
+      vol (int), crypto (bool)
+    """
+    name = market["name"]
+    sym  = market["sym"]
+    cat  = market["cat"]
+
+    _amd_accum_mode = False  # initialisé avant la logique
+
+    def _reject(reason):
+        result_queue.put({
+            "name": name, "cat": cat, "found": False, "reason": reason, "improv": False,
+        })
+
+    try:
+        # ── Fetch candles ─────────────────────────────────────────────
+        # Import fetch_c depuis main (disponible dans le même process)
+        try:
+            from __main__ import fetch_c
+        except Exception:
+            _reject("fetch_c non disponible"); return
+
+        # ── Fetch multi-timeframe (Yahoo Finance compatible) ─────────────
+        # NOTE: Yahoo ne supporte PAS "4h" → on resample 1h→4h manuellement
+        # Daily : 3 mois pour biais institutionnel
+        c_daily = fetch_c(sym, "1d", "3mo")
+        # H4 reconstitué : fetch 1h sur 60j puis resample × 4
+        c_h1_long = fetch_c(sym, "1h", "60d")
+        c_h4 = _resample_h4(c_h1_long) if c_h1_long and len(c_h1_long) >= 8 else None
+        # H1 : 15j pour phase AMD
+        c_h1 = fetch_c(sym, "1h", "15d") or c_h1_long
+        # M15 : 5j pour entrée SMC
+        c_m15 = fetch_c(sym, "15m", "5d")
+
+        if not c_h1 or len(c_h1) < 15:
+            _reject("H1 insuffisant ({})".format(len(c_h1) if c_h1 else 0)); return
+        if not c_m15 or len(c_m15) < 20:
+            _reject("M15 insuffisant ({})".format(len(c_m15) if c_m15 else 0)); return
+
+        # ── ATR ────────────────────────────────────────────────────────
+        def atr(candles, n=14):
+            if len(candles) < n + 1: return 0
+            trs = [max(c["h"]-c["l"], abs(c["h"]-candles[i-1]["c"]),
+                       abs(c["l"]-candles[i-1]["c"]))
+                   for i, c in enumerate(candles[1:], 1) if i <= len(candles)-1]
+            return sum(trs[-n:]) / n if trs else 0
+
+        atr_h1  = atr(c_h1)
+        atr_m15 = atr(c_m15)
+        if atr_m15 <= 0: _reject("ATR invalide"); return
+
+        # ── Spread check ───────────────────────────────────────────────
+        if c_m15:
+            last_c = c_m15[-1]
+            spread = round((last_c.get("h", 0) - last_c.get("l", 0)) / market["pip"], 1)
+            if spread > market.get("max_sp", 99) * 1.5:
+                _reject("Spread trop large ({})".format(spread)); return
+        else:
+            spread = 0
+
+        price = c_m15[-1]["c"]
+
+        # ── ÉTAPE 1 : Daily Bias ────────────────────────────────────────
+        daily = detect_daily_bias(c_daily) if c_daily and len(c_daily) >= 10 else {
+            "bias": "NEUTRAL", "strength": 0, "daily_score": 0, "description": "Daily N/A"}
+
+        # ── ÉTAPE 2 : H4 Bias + Supply/Demand Zones ───────────────────
+        h4 = detect_h4_bias_and_zones(c_h4) if c_h4 and len(c_h4) >= 20 else {
+            "bias": "NEUTRAL", "trend_score": 0, "h4_score": 0,
+            "supply_zones": [], "demand_zones": []}
+
+        # ── Déterminer le biais de trading ─────────────────────────────
+        # Priorité : Daily → H4 (doivent être alignés)
+        d_bias  = daily.get("bias", "NEUTRAL")
+        h4_bias = h4.get("bias", "NEUTRAL")
+
+        if d_bias != "NEUTRAL" and h4_bias != "NEUTRAL" and d_bias == h4_bias:
+            trade_bias = d_bias
+        elif d_bias != "NEUTRAL":
+            trade_bias = d_bias  # Daily prioritaire
+        elif h4_bias != "NEUTRAL":
+            trade_bias = h4_bias
+        else:
+            _reject("Biais Daily/H4 neutre — pas de tendance"); return
+
+        # ── ÉTAPE 3 : BOS + CHoCH H1 ──────────────────────────────────
+        bos = detect_bos_choch_h1(c_h1, trade_bias)
+
+        # ── ÉTAPE 4 : AMD Phase H1/M15 ────────────────────────────────
+        amd = detect_amd_h1(c_h1, c_m15, trade_bias, atr_h1)
+
+        # Phase AMD — Distribution = idéal, Manipulation = OK, Accumulation = accepté avec score élevé
+        if amd["phase"] == "UNKNOWN":
+            _reject("Pas de phase AMD détectée — marché sans structure"); return
+        if amd["phase"] == "ACCUMULATION":
+            # Accumulation acceptée seulement si score final sera élevé
+            _amd_accum_mode = True
+        else:
+            _amd_accum_mode = False
+
+        # ── ÉTAPE 5 : SMC Entry M15 ────────────────────────────────────
+        rr_min = max(SMC_PRIORITY_MARKETS.get(name, {}).get("rr_min", SMC_RR_MIN), 3.0)
+        entry_m15 = detect_smc_entry_m15(c_m15, trade_bias, amd, atr_m15)
+
+        # Minimum 3 confirmations SMC (4 en mode strict Gold/BTC)
+        smc_min = SMC_CONFIRMATIONS if name in ("XAUUSD", "BTCUSD") else max(SMC_CONFIRMATIONS - 1, 2)
+        if entry_m15["smc_count"] < smc_min:
+            _reject("SMC {}/{} confirmations (min {})".format(
+                entry_m15["smc_count"], 6, smc_min)); return
+
+        # ── ÉTAPE 6 : Fondamental ──────────────────────────────────────
+        dxy  = fetch_dxy_bias()
+        risk = get_risk_sentiment()
+        fund = fundamental_filter(name, "BUY" if trade_bias == "BULLISH" else "SELL", dxy, risk)
+
+        if not fund["valid"]:
+            _reject("Fondamental bloqué : {}".format(fund["reason"])); return
+
+        # ── ÉTAPE 7 : Score hybride ────────────────────────────────────
+        hybrid = compute_hybrid_score(daily, h4, bos, amd, entry_m15, fund, name)
+        score  = hybrid["score"]
+
+        # ── Seuil ADAPTATIF selon qualité du setup ──────────────────────
+        amd_phase_str = amd.get("phase", "")
+        smc_n = entry_m15.get("smc_count", 0)
+        try:
+            from __main__ import get_adaptive_score_min, is_kill_zone
+            if is_kill_zone():
+                _reject("Kill Zone active — signal bloqué"); return
+            threshold = get_adaptive_score_min(amd_phase_str, smc_n)
+        except Exception:
+            is_strict = SMC_PRIORITY_MARKETS.get(name, {}).get("strict", False)
+            threshold = SMC_SCORE_GOLD_BTC if is_strict else max(score_min, SMC_SCORE_DEFAULT)
+
+        # Ajustement seuil si mode accumulation (plus restrictif)
+        if _amd_accum_mode:
+            threshold = min(threshold + 10, 95)
+
+        if score < threshold:
+            _reject("Score {}/{} sous seuil {} (AMD:{} SMC:{}/6)".format(
+                score, 100, threshold, amd_phase_str, smc_n)); return
+
+        # ── ÉTAPE 8 : SL / TP / RR ────────────────────────────────────
+        signal_side = "BUY" if trade_bias == "BULLISH" else "SELL"
+        levels = compute_levels(c_m15, trade_bias, amd, entry_m15, atr_m15, market, rr_min)
+        if not levels["valid"]:
+            _reject("Niveaux SL/TP invalides"); return
+
+        if levels["rr"] < rr_min:
+            _reject("RR {:.1f} < {:.1f} minimum".format(levels["rr"], rr_min)); return
+
+        # ── Badges finaux ──────────────────────────────────────────────
+        badges = []
+        if amd["phase"] == "DISTRIBUTION": badges.append("⚡ AMD DISTRIB")
+        elif amd["phase"] == "MANIPULATION": badges.append("🎯 AMD MANIP")
+        if bos["bos"]: badges.append("BOS ✓")
+        if bos["choch"]: badges.append("CHoCH ✓")
+        badges += entry_m15.get("badges", [])[:4]
+
+        # ── Signal ────────────────────────────────────────────────────
+        mp_cfg = SMC_PRIORITY_MARKETS.get(name, {})
+        signal = {
+            # Identité
+            "name":   name, "cat": cat, "sym": sym,
+            "side":   signal_side,
+            "time":   datetime.now(timezone.utc).strftime("%H:%M"),
+
+            # Niveaux
+            "entry":  levels["entry"],
+            "sl":     levels["sl"],
+            "tp":     levels["tp"],
+            "rr":     levels["rr"],
+            "sp":     spread,
+
+            # Gains estimés
+            "g001": levels["g001"], "l001": levels["l001"],
+            "g01":  levels["g01"],  "l01":  levels["l01"],
+            "g1":   levels["g1"],   "l1":   levels["l1"],
+
+            # Score et analyse
+            "score":      score,
+            "score_breakdown": hybrid.get("breakdown", {}),
+            "verdict":    hybrid["verdict"],
+            "badges":     " · ".join(badges[:6]),
+            "tf_tag":     "Daily→H4→H1→M15",
+            "bias":       trade_bias,
+            "btype":      "Daily+H4 Alignés" if d_bias == h4_bias else "H4",
+
+            # AMD
+            "amd_phase":  amd["phase"],
+            "amd_conf":   amd["confidence"],
+            "sweep_type": amd.get("sweep_type", "—"),
+            "sweep_level": amd.get("sweep_level", 0),
+            "range_high": amd.get("range_high", 0),
+            "range_low":  amd.get("range_low", 0),
+
+            # SMC Entry
+            "smc_count":  entry_m15["smc_count"],
+            "confirmations": entry_m15["confirmations"],
+            "ob_zone":    entry_m15.get("ob_zone"),
+            "fvg_zone":   entry_m15.get("fvg_zone"),
+            "breaker_zone": entry_m15.get("breaker_zone"),
+            "choch_m15":  entry_m15.get("choch", False),
+            "liq_sweep":  entry_m15.get("liq_sweep", False),
+
+            # Multi-TF
+            "daily_bias":  d_bias,
+            "daily_strength": daily.get("strength", 0),
+            "h4_bias":     h4_bias,
+            "h4_trend":    h4.get("trend_score", 0),
+            "bos_type":    bos.get("bos_type", "—"),
+            "supply_zones": h4.get("supply_zones", [])[:2],
+            "demand_zones": h4.get("demand_zones", [])[:2],
+
+            # Fondamental
+            "dxy_label":  dxy.get("label", "—"),
+            "dxy_bias":   dxy.get("bias", "NEUTRAL"),
+            "risk_mode":  risk.get("mode", "NEUTRAL"),
+            "risk_label": risk.get("label", "—"),
+            "fund_reason": fund.get("reason", ""),
+
+            # Méta
+            "is_priority": name in SMC_PRIORITY_MARKETS,
+            "priority_label": mp_cfg.get("label", name),
+            "setup_key":  "{}|{}|{}".format(name, signal_side, amd["phase"]),
+        }
+
+        result_queue.put({"name": name, "cat": cat, "found": True, "signal": signal,
+                          "amd_phase": amd["phase"], "score": score, "improv": False})
+        _LSMC.info("✅ SMC Signal: {} {} score={} phase={} smc={}/6".format(
+            name, signal_side, score, amd["phase"], entry_m15["smc_count"]))
+
+    except Exception as e:
+        _LSMC.warning("smc_agent_analyze {}: {}".format(name, e))
+        _reject("Exception: {}".format(str(e)[:60]))
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  MODULE 10 : FORMATAGE SIGNAL SMC (Telegram)
+# ══════════════════════════════════════════════════════════════════════════
+
+def fmt_smc_signal_pro(s: dict, news: str, session_label: str) -> str:
+    """
+    Message signal PRO/VIP avec analyse SMC complète.
+    Remplace fmt_signal_pro() pour les signaux SMC.
+    """
+    side_fr = "ACHAT" if s["side"] == "BUY" else "VENTE"
+    se      = "🟢" if s["side"] == "BUY" else "🔴"
+    d       = "⬆️" if s["side"] == "BUY" else "⬇️"
+    phase   = s.get("amd_phase", "?")
+    name    = s.get("name", "?")
+    score   = s.get("score", 0)
+    bar     = "█" * (score // 10) + "░" * (10 - score // 10)
+    news_ok = "✅" in news or "clear" in news.lower()
+    is_prio = s.get("is_priority", False)
+    verdict = s.get("verdict", "")
+
+    # En-tête phase AMD
+    phase_header = {
+        "DISTRIBUTION": "⚡ AMD DISTRIBUTION — ENTRÉE OPTIMALE",
+        "MANIPULATION": "🎯 AMD MANIPULATION — SWEEP CONFIRMÉ",
+    }.get(phase, "📊 SIGNAL SMC")
+
+    prio_badge = ""
+    if is_prio:
+        prio_badge = "🔥 <b>SETUP PREMIUM {}</b>\n".format(
+            s.get("priority_label", name))
+
+    # Confirmations SMC
+    confs = s.get("confirmations", [])
+    smc_icons = {
+        "OB": "📦 OB", "FVG": "🌀 FVG", "BREAKER": "🔷 Breaker",
+        "SWEEP": "💧 Sweep", "CHoCH": "🔄 CHoCH", "ENGULF": "💥 Engulf",
+    }
+    conf_line = "  ".join(smc_icons.get(c, c) + " ✅" for c in confs) or "—"
+
+    # Zones S/D
+    sz = s.get("supply_zones", [])
+    dz = s.get("demand_zones", [])
+    sz_line = " | ".join("<code>{}-{}</code>".format(z["bot"], z["top"]) for z in sz[:2]) or "—"
+    dz_line = " | ".join("<code>{}-{}</code>".format(z["bot"], z["top"]) for z in dz[:2]) or "—"
+
+    # Sweep type
+    sweep_fr = {
+        "BSL_SWEEP": "BSL (Buy-Side Liquidity)",
+        "SSL_SWEEP": "SSL (Sell-Side Liquidity)",
+        "EQH_SWEEP": "EQH (Equal Highs)",
+        "EQL_SWEEP": "EQL (Equal Lows)",
+    }.get(s.get("sweep_type", ""), s.get("sweep_type", "—"))
+
+    msg = (
+        "{se} {d} <b>{sf} — {name}</b>\n"
+        "══════════════════════════\n\n"
+        "{prio}"
+        "⚙️ <b>{phase_header}</b>\n"
+        "🏅 {verdict}\n\n"
+        "🕐 {session}  ·  {time} UTC\n"
+        "🔭 Daily <b>{daily}</b> ({ds}/5)  →  H4 <b>{h4}</b> ({h4t}/5)\n"
+        "    H1 AMD <b>{phase}</b>  →  M15 Entrée\n\n"
+        "🎯 <b>NIVEAUX ICT</b>\n"
+        "  📍 Entrée  : <code>{entry}</code>\n"
+        "  ✅ TP      : <code>{tp}</code>  {d}\n"
+        "  ❌ SL      : <code>{sl}</code>  (sweep {sweep})\n"
+        "  📐 RR      : <b>1:{rr}</b>\n\n"
+        "💵 <b>GAINS ESTIMÉS</b>\n"
+        "  Lot 0.01 → <b>+${g001}</b>  /  -${l001}\n"
+        "  Lot 0.10 → <b>+${g01}</b>   /  -${l01}\n"
+        "  Lot 1.00 → <b>+${g1}</b>   /  -${l1} 💰\n\n"
+        "🧩 <b>CONFIRMATIONS SMC ({smc_cnt}/6)</b>\n"
+        "  {conf_line}\n\n"
+        "🏦 <b>ANALYSE MULTI-TIMEFRAME</b>\n"
+        "  📊 Score    : [{bar}] <b>{score}/100</b>\n"
+        "  {bos_icon} Structure : <b>{bos_type}</b>\n"
+        "  🌀 AMD      : {phase} (confiance {amd_conf}%)\n"
+        "  💧 Sweep    : {sweep_fr}\n"
+        "  Range       : <code>{r_low}</code> – <code>{r_high}</code>\n\n"
+        "🌍 <b>FONDAMENTAL</b>\n"
+        "  {dxy_label}\n"
+        "  {risk_label}\n"
+        "  {fund_reason}\n\n"
+        "📦 Supply H4 : {sz}\n"
+        "📦 Demand H4 : {dz}\n\n"
+        "📰 News : {news_s}  ·  Spread : {sp_s}\n"
+        "══════════════════════════\n"
+        "⚠️ Risk 1% max  ·  Not financial advice\n"
+        "🤖 <b>AlphaBot PRO v21</b>  ·  SMC Fusion Engine"
+    ).format(
+        se=se, d=d, sf=side_fr, name=name,
+        prio=prio_badge, phase_header=phase_header, verdict=verdict,
+        session=session_label, time=s.get("time", "?"),
+        daily=s.get("daily_bias", "?"), ds=s.get("daily_strength", 0),
+        h4=s.get("h4_bias", "?"), h4t=s.get("h4_trend", 0),
+        phase=phase,
+        entry=s.get("entry", "?"), tp=s.get("tp", "?"), sl=s.get("sl", "?"),
+        rr=s.get("rr", "?"), sweep=s.get("sweep_level", "?"),
+        g001=s.get("g001","?"), l001=s.get("l001","?"),
+        g01=s.get("g01","?"),   l01=s.get("l01","?"),
+        g1=s.get("g1","?"),     l1=s.get("l1","?"),
+        smc_cnt=s.get("smc_count", 0), conf_line=conf_line,
+        bar=bar, score=score,
+        bos_icon="✅" if s.get("bos_type", "—") not in ("—", "CHoCH_BEAR", "CHoCH_BULL") else "🔄",
+        bos_type=s.get("bos_type", "—"),
+        amd_conf=s.get("amd_conf", 0),
+        sweep_fr=sweep_fr,
+        r_low=s.get("range_low", "?"), r_high=s.get("range_high", "?"),
+        dxy_label=s.get("dxy_label", "—"),
+        risk_label=s.get("risk_label", "—"),
+        fund_reason=s.get("fund_reason", ""),
+        sz=sz_line, dz=dz_line,
+        news_s="✅ Calme" if news_ok else "⚠️ Actif",
+        sp_s="✅ OK" if s.get("sp", 99) < 3 else "⚠️ Large",
+    )
+    return msg
+
+
+def fmt_smc_signal_free(s: dict, news: str, session_label: str) -> str:
+    """Message simplifié pour les membres FREE."""
+    se  = "🟢" if s["side"] == "BUY" else "🔴"
+    sf  = "ACHAT" if s["side"] == "BUY" else "VENTE"
+    d   = "⬆️" if s["side"] == "BUY" else "⬇️"
+    sc  = s.get("score", 0)
+    phase = s.get("amd_phase", "?")
+    phase_ico = "⚡" if phase == "DISTRIBUTION" else "🎯"
+
+    if sc >= 90:   hook = "🔥 <b>Setup ÉLITE — Score exceptionnel</b>"
+    elif sc >= 80: hook = "💎 <b>Setup SMC Premium — Haute confiance</b>"
+    else:          hook = "✅ <b>Setup SMC validé — Conditions réunies</b>"
+
+    return (
+        "{se} {d} <b>{name} — {sf}</b>\n"
+        "══════════════════════════\n"
+        "{hook}\n"
+        "{pe} AMD : <b>{phase}</b>  ·  Daily+H4 Alignés\n\n"
+        "📍 Entrée : <code>{entry}</code>\n"
+        "✅ TP     : <code>{tp}</code>\n"
+        "❌ SL     : <code>{sl}</code>\n"
+        "📐 RR     : <b>1:{rr}</b>  ·  Score : <b>{score}/100</b>\n\n"
+        "🧩 SMC : {smc_cnt}/6 confirmations\n"
+        "💵 Lot 0.01 → <b>+${g001}</b>\n\n"
+        "══════════════════════════\n"
+        "⚠️ Analyse technique — pas un conseil financier\n"
+        "🤖 <b>AlphaBot PRO v21</b>  ·  @leaderodg_bot"
+    ).format(
+        se=se, d=d, name=s.get("name","?"), sf=sf, hook=hook,
+        pe=phase_ico, phase=phase,
+        entry=s.get("entry","?"), tp=s.get("tp","?"), sl=s.get("sl","?"),
+        rr=s.get("rr","?"), score=sc,
+        smc_cnt=s.get("smc_count",0), g001=s.get("g001","?"),
+    )
+
+
+def fmt_smc_badge_block(s: dict) -> str:
+    """
+    Bloc AMD/SMC compact à ajouter à la fin de fmt_signal_pro() existant.
+    Utilisé pour enrichir les signaux non-SMC avec les infos AMD.
+    """
+    phase = s.get("amd_phase", "")
+    if not phase or phase in ("UNKNOWN", "ACCUMULATION"):
+        return ""
+
+    phase_emoji = "⚡" if phase == "DISTRIBUTION" else "🎯"
+    sweep_type  = s.get("sweep_type", "—")
+    smc_cnt     = s.get("smc_count", 0)
+    confs       = s.get("confirmations", [])
+    conf_str    = " · ".join(confs[:4]) or "—"
+    dxy_label   = s.get("dxy_label", "")
+    risk_label  = s.get("risk_label", "")
+
+    return (
+        "\n\n──────────────────────────\n"
+        "{pe} <b>AMD {phase}</b>  ·  SMC {cnt}/6\n"
+        "  Sweep : {sw}  ·  Daily→H4→M15\n"
+        "  Conf  : {confs}\n"
+        "{dxy_line}"
+        "{risk_line}"
+        "──────────────────────────"
+    ).format(
+        pe=phase_emoji, phase=phase,
+        cnt=smc_cnt, sw=sweep_type, confs=conf_str,
+        dxy_line="  🌐 {}\n".format(dxy_label) if dxy_label else "",
+        risk_line="  📊 {}\n".format(risk_label) if risk_label else "",
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  EXPORT PRINCIPAL
+# ══════════════════════════════════════════════════════════════════════════
+
+
+
+# ── Aliases AMD rétrocompatibilité ──────────────────────────────────────
+_AMD_OK  = True
+_SMC_OK  = True
+AMD_PRIORITY_MARKETS = SMC_PRIORITY_MARKETS
+def amd_agent_analyze(m, sm, news_ok, q): smc_agent_analyze(m, sm, news_ok, q)
+def fmt_amd_badge_block(s): return fmt_smc_badge_block(s)
+def fmt_signal_amd_vip(s, news, sl): return fmt_smc_signal_pro(s, news, sl)
+print("[SMC] ✅ SMC Fusion Engine v21 Final — intégré (Daily→H4→H1→M15)")
+
 
 # ══════════════════════════════════════════════════════
 #  CONFIG
@@ -2738,11 +4173,30 @@ def _scan_inner():
     active = [m for m in MARKETS if allowed_market(m)]
     if not active:
         log("INFO", clr("Aucun marché actif pour ce créneau.", "y")); return
+
+    # ── Kill Zone ICT — bloquer le scan si KZ active ─────────────────────
+    sq = get_session_quality()
+    if not sq["allowed"] and not wknd:
+        log("INFO", clr("⛔ Kill Zone {} — scan suspendu".format(sn), "yellow")); return
+
+    # ── Filtre news HIGH ──────────────────────────────────────────────────
+    news_status, news_title, _news_adj = news_filter()
+    if news_status == "BLOCK":
+        log("INFO", clr("📰 NEWS BLOCK : {} — scan suspendu".format(
+            (news_title or "")[:40]), "yellow")); return
+    if news_status == "CAUTION":
+        sm = min(sm + 5, 95)
+        log("INFO", clr("📰 NEWS CAUTION — score min → {}".format(sm), "yellow"))
+
     q = Queue(); threads = []
     for m in active:
-        # On passe False à agent_analyze
-        t = threading.Thread(target=agent_analyze,
-                             args=(m, sm, news_ok, q), daemon=True)
+        # ── Routing SMC v21 > AMD > classique ─────────────────────────
+        use_smc = _SMC_OK and m["name"] in SMC_PREMIUM_MARKETS
+        use_amd = not use_smc and _AMD_OK and m["name"] in AMD_PREMIUM_MARKETS
+        _target = (smc_agent_analyze if use_smc
+                   else amd_agent_analyze if use_amd
+                   else agent_analyze)
+        t = threading.Thread(target=_target, args=(m, sm, news_ok, q), daemon=True)
         t.start(); threads.append(t)
     for t in threads: t.join(timeout=15)
     raw = {}
@@ -2788,7 +4242,15 @@ def _scan_inner():
         sc  = sig.get("score", 0)
         stk = STK_CROWN if sc >= 90 else STK_MONEY if sig["side"]=="BUY" else STK_FIRE
 
-        msg_p       = fmt_pro(sig, news_lbl, sl_l)
+        # ── Format signal : SMC v21 > AMD > classique ────────────────
+        has_smc = sig.get("smc_count", 0) >= 2 and _SMC_OK
+        has_amd = sig.get("amd_phase") in ("DISTRIBUTION", "MANIPULATION")
+        if has_smc:
+            msg_p = fmt_smc_signal_pro(sig, news_lbl, sl_l)
+        elif has_amd and _AMD_OK:
+            msg_p = fmt_signal_amd_vip(sig, news_lbl, sl_l)
+        else:
+            msg_p = fmt_pro(sig, news_lbl, sl_l)
         msg_teasing = fmt_signal_teasing(sig)
 
         # ── Image du signal ──────────────────────────────────────────
@@ -7295,21 +8757,25 @@ def main():
             sm_real = get_adaptive_score_min()
             ch = chal_get()
             tg_send(ADMIN_ID,
-                "🤖 <b>AlphaBot PRO v20 — EN LIGNE !</b>\n\n"
-                "✅ DB initialisée\n"
-                "✅ Port {} ouvert\n"
-                "✅ Webhook configuré\n"
-                "🧠 IA Validator : {}  [mode: {}]\n\n"
-                "🕐 Session : <b>{}</b>  Score min : <b>{}</b>\n"
-                "🌍 Régime IA : <b>{}</b>\n"
-                "🏆 Challenge IA : <b>{:.2f}$</b> / 10 000$ objectif\n\n"
+                "🤖 <b>AlphaBot PRO v21 — EN LIGNE !</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "✅ DB initialisée  ·  Port {} ouvert\n"
+                "✅ Webhook configuré  ·  Scan : <b>5 min</b>\n\n"
+                "🧠 IA : {}  [{}]\n"
+                "🧩 SMC Engine v21 Final : <b>{}</b>\n\n"
+                "🕐 Session active : <b>{}</b>\n"
+                "📊 Score min adaptatif : <b>{}</b>\n"
+                "🌍 Régime IA : <b>{}</b>\n\n"
+                "🏆 Challenge : <b>{:.2f}$</b> / 10 000$ objectif\n"
                 "📡 FREE {}/j  ·  PRO {}/j  (Qualité > Quantité)\n"
-                "⏱ Scan : toutes les 5 min\n"
-                "🛠 /admin pour le panel".format(
+                "🔕 Kill Zones ICT : London 07-08h30 · NY 13-14h30 · Close 20h30\n"
+                "✅ RR minimum : 1:3  ·  Parrainage : 20 filleuls = 3 mois PRO\n\n"
+                "🛠 /admin pour le panel admin".format(
                     port,
                     ("✅ Claude" if CLAUDE_API_KEY else "⚠️ Sans Claude")
                     + (" + Gemini" if GEMINI_API_KEY else ""),
                     AI_VALIDATOR,
+                    "✅ Actif" if _SMC_OK else "⚠️ Fallback AMD",
                     sl_l, sm_real,
                     AI_REG.get("regime", "Init"),
                     ch["balance"], FREE_LIMIT, PRO_LIMIT),
@@ -7378,5 +8844,4 @@ def main():
 
 if __name__=="__main__":
     main()
-
 
