@@ -1080,10 +1080,13 @@ def smc_agent_analyze(market: dict, score_min: int, news_ok: bool,
     try:
         # ── Fetch candles ─────────────────────────────────────────────
         # Import fetch_c depuis main (disponible dans le même process)
-        try:
-            from __main__ import fetch_c
-        except Exception:
-            _reject("fetch_c non disponible"); return
+        # fetch_c est dans le même fichier — accès direct
+        if 'fetch_c' not in dir():
+            try:
+                import __main__ as _m
+                fetch_c = _m.fetch_c
+            except Exception:
+                _reject("fetch_c non disponible"); return
 
         # ── Fetch multi-timeframe (Yahoo Finance compatible) ─────────────
         # NOTE: Yahoo ne supporte PAS "4h" → on resample 1h→4h manuellement
@@ -1189,10 +1192,12 @@ def smc_agent_analyze(market: dict, score_min: int, news_ok: bool,
         amd_phase_str = amd.get("phase", "")
         smc_n = entry_m15.get("smc_count", 0)
         try:
-            from __main__ import get_adaptive_score_min, is_kill_zone
-            if is_kill_zone():
+            import __main__ as _m
+            _gasm = getattr(_m, 'get_adaptive_score_min', None)
+            _ikz  = getattr(_m, 'is_kill_zone', None)
+            if _ikz and _ikz():
                 _reject("Kill Zone active — signal bloqué"); return
-            threshold = get_adaptive_score_min(amd_phase_str, smc_n)
+            threshold = _gasm(amd_phase_str, smc_n) if _gasm else threshold
         except Exception:
             is_strict = SMC_PRIORITY_MARKETS.get(name, {}).get("strict", False)
             threshold = SMC_SCORE_GOLD_BTC if is_strict else max(score_min, SMC_SCORE_DEFAULT)
@@ -1940,6 +1945,8 @@ MARKET_PRIORITY = {
 
 # ── Marchés AMD Premium (analyse H4 forcée) ─────────────────────────
 AMD_PREMIUM_MARKETS = {"XAUUSD", "BTCUSD", "XAGUSD"}
+SMC_PREMIUM_MARKETS = {"XAUUSD", "BTCUSD", "XAGUSD", "NAS100", "SPX500", "US30",
+                        "EURUSD", "GBPUSD", "USDJPY", "GBPJPY", "EURJPY", "XAGUSD"}
 
 # Forex autorisés en semaine
 FOREX_ACTIFS = {"EURUSD", "GBPUSD", "USDJPY", "GBPJPY", "EURJPY"}
@@ -1988,7 +1995,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
     datefmt="%H:%M:%S", handlers=[logging.StreamHandler(),
     logging.FileHandler("ab10.log", encoding="utf-8")])
 L = logging.getLogger("AB10")
-C = {"r":"\033[0m","b":"\033[1m","d":"\033[2m","c":"\033[96m","g":"\033[92m","y":"\033[93m","red":"\033[91m","m":"\033[95m"}
+C = {"r":"\033[0m","b":"\033[1m","d":"\033[2m","c":"\033[96m","g":"\033[92m","y":"\033[93m","yellow":"\033[93m","red":"\033[91m","m":"\033[95m","cyan":"\033[96m","green":"\033[92m","bold":"\033[1m","dim":"\033[2m","reset":"\033[0m"}
 def clr(t,*c): return "".join(C[x] for x in c)+str(t)+C["r"]
 def log(lv,msg):
     tags={"INFO":clr(" INFO ","b","c"),"SIG":clr(" SIGNAL","b","g"),"WARN":clr(" WARN ","b","y"),
@@ -2265,12 +2272,26 @@ def tg_sticker(cid, sid): tg_req("sendSticker",{"chat_id":str(cid),"sticker":sid
 #   • PostgreSQL (Render persistant) si DATABASE_URL est défini
 #   • SQLite local en fallback (tests / dev)
 # ─────────────────────────────────────────────────────
+# ── Import alphabot_pg (PostgreSQL + SQLite fallback) ────────────────
+# Protection anti-boucle : si ce fichier S'APPELLE alphabot_pg, on saute
 import sys as _sys, os as _os
 _pg_path = _os.path.dirname(_os.path.abspath(__file__))
+_this_file = _os.path.basename(__file__).replace('.pyc','').replace('.py','')
 if _pg_path not in _sys.path:
     _sys.path.insert(0, _pg_path)
 
-from alphabot_pg import (
+# Si alphabot_pg n'est pas dispo, on utilise des stubs
+_USE_PG_MODULE = (_this_file != 'alphabot_pg')
+if _USE_PG_MODULE:
+    try:
+        import importlib as _il
+        _pg_mod = _il.import_module('alphabot_pg')
+    except Exception as _pg_err:
+        _USE_PG_MODULE = False
+        print(f"[DB] ⚠️ alphabot_pg indisponible: {_pg_err}")
+
+if _USE_PG_MODULE:
+    from alphabot_pg import (
     # Connexion & lock
     _conn, _dbl, _db_lock, _USE_PG,
     # Helpers bas niveau
@@ -2308,6 +2329,62 @@ from alphabot_pg import (
     # Migration CLI
     migrate_sqlite_to_pg,
 )
+else:
+    # ── Stubs DB si alphabot_pg indisponible ─────────────────────────
+    import sqlite3 as _sq3, threading as _th3, json as _jdb
+    _conn = None; _dbl = _th3.Lock(); _db_lock = _th3.Lock(); _USE_PG = False
+    def db_one(*a, **k): return None
+    def db_all(*a, **k): return []
+    def db_run(*a, **k): return None
+    def db_init(): pass
+    def db_register(uid, uname=None): pass
+    def db_pro(uid, days=30): pass
+    def db_free(uid): pass
+    def is_pro(uid): return False
+    def get_plan(uid): return "FREE"
+    def get_refs(uid): return []
+    def get_pro_info(uid): return {}
+    def pro_users(): return []
+    def free_users(): return []
+    def all_users(): return []
+    def find_user(uid): return None
+    def count_today(uid): return 0
+    def count_incr(uid): pass
+    def db_count_increment(uid): pass
+    def check_expiry(): pass
+    def save_signal(s, sn): pass
+    def open_signals(): return []
+    def close_track(sid, result, pnl): pass
+    def daily_stats(): return {}
+    def weekly_stats(): return {}
+    def global_stats(): return (0,0,0,0,0)
+    def rep_sent(uid, t): return False
+    def mark_rep(uid, t): pass
+    def save_pay(uid, ref, plan, amt): pass
+    def pending_pays(): return []
+    def db_save_payment(*a): pass
+    def db_pending_payments(): return []
+    def chal_get(): return {"balance": 10000.0, "trades": 0, "wins": 0, "losses": 0}
+    def chal_save(d): pass
+    def mem_query(*a, **k): return []
+    def mem_record(*a, **k): pass
+    def best_setups(*a): return []
+    def worst_setups(*a): return []
+    def db_get_pro_info(uid): return {}
+    def db_get_refs(uid): return []
+    def db_global_stats(): return (0,0,0,0,0)
+    def db_daily_stats(): return {}
+    def db_weekly_stats(): return {}
+    def db_get_pro_users(): return []
+    def db_get_free_users(): return []
+    def db_downgrade_pro(uid): pass
+    def db_activate_pro(uid, days=30): pass
+    def db_find_by_username(uname): return None
+    def db_count_today(uid): return 0
+    def db_get_inactive_users(days=7): return []
+    def inactive_users(): return []
+    def migrate_sqlite_to_pg(): pass
+
 
 log("INFO", clr("DB v10 OK (backend: {})".format("PostgreSQL" if _USE_PG else "SQLite"), "b", "g"))
 
@@ -2824,7 +2901,7 @@ def news_filter():
     """
     try:
         data = _get_news_data()
-        now  = datetime.utcnow()
+        now  = datetime.now(timezone.utc).replace(tzinfo=None)
         for evt in data:
             if evt.get("impact","") != "High": continue
             try:
@@ -8756,6 +8833,10 @@ def main():
             sn, sm, sl_l, wknd = get_session()
             sm_real = get_adaptive_score_min()
             ch = chal_get()
+            try:
+                total_m, pro_m, _, _, _ = db_global_stats()
+            except Exception:
+                total_m = pro_m = 0
             tg_send(ADMIN_ID,
                 "🤖 <b>AlphaBot PRO v22 — EN LIGNE !</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -8766,7 +8847,7 @@ def main():
                 "🕐 Session active : <b>{}</b>\n"
                 "📊 Score min adaptatif : <b>{}</b>\n"
                 "🌍 Régime IA : <b>{}</b>\n\n"
-                "🏆 Challenge : <b>{:.2f}$</b> / 10 000$ objectif\n"
+                "📊 Membres actifs : <b>{}</b>  ·  PRO : <b>{}</b>\n"
                 "📡 FREE {}/j  ·  PRO {}/j  (Qualité > Quantité)\n"
                 "🔕 Kill Zones ICT : London 07-08h30 · NY 13-14h30 · Close 20h30\n"
                 "✅ RR minimum : 1:3  ·  Parrainage : 20 filleuls = 3 mois PRO\n\n"
@@ -8778,10 +8859,10 @@ def main():
                     "✅ Actif" if _SMC_OK else "⚠️ Fallback AMD",
                     sl_l, sm_real,
                     AI_REG.get("regime", "Init"),
-                    ch["balance"], FREE_LIMIT, PRO_LIMIT),
+                    total_m, pro_m, FREE_LIMIT, PRO_LIMIT),
                 kb=kb_reply())
         threading.Thread(target=_init_bg, daemon=True).start()
-        state = {"ls": 0, "la": 0, "lc": 0}
+        state = {"ls": -SCAN_SEC, "la": 0, "lc": 0}  # 1er scan immédiat au boot
         def _loop():
             while True:
                 try:
@@ -8825,7 +8906,7 @@ def main():
         log("INFO", clr("Polling démarré (offset={})".format(offset), "g"))
         # Broadcast nouvelle version
         threading.Thread(target=broadcast_new_version, daemon=True).start()
-        ls=la=lc=0
+        ls=-SCAN_SEC; la=lc=0  # 1er scan immédiat
         while True:
             try:
                 updates = tg_req("getUpdates", {
