@@ -1388,7 +1388,7 @@ def fmt_smc_signal_pro(s: dict, news: str, session_label: str) -> str:
         "📰 News : {news_s}  ·  Spread : {sp_s}\n"
         "══════════════════════════\n"
         "⚠️ Risk 1% max  ·  Not financial advice\n"
-        "🤖 <b>AlphaBot PRO v21</b>  ·  SMC Fusion Engine"
+        "🤖 <b>AlphaBot PRO v22</b>  ·  SMC Fusion Engine"
     ).format(
         se=se, d=d, sf=side_fr, name=name,
         prio=prio_badge, phase_header=phase_header, verdict=verdict,
@@ -1444,7 +1444,7 @@ def fmt_smc_signal_free(s: dict, news: str, session_label: str) -> str:
         "💵 Lot 0.01 → <b>+${g001}</b>\n\n"
         "══════════════════════════\n"
         "⚠️ Analyse technique — pas un conseil financier\n"
-        "🤖 <b>AlphaBot PRO v21</b>  ·  @leaderodg_bot"
+        "🤖 <b>AlphaBot PRO v22</b>  ·  @leaderodg_bot"
     ).format(
         se=se, d=d, name=s.get("name","?"), sf=sf, hook=hook,
         pe=phase_ico, phase=phase,
@@ -2176,7 +2176,7 @@ def generate_signal_chart(sig, candles=None):
     ax_c.set_facecolor(BG2); ax_c.tick_params(colors=GREY, labelsize=6)
     for sp in ax_c.spines.values(): sp.set_color(GREY); sp.set_linewidth(0.4)
     ax_c.set_xlim(-1, x_end + 4)
-    ax_c.set_title("M15  -  AlphaBot PRO v10", color=GREY, fontsize=7.5, pad=4)
+    ax_c.set_title("M15  -  AlphaBot PRO v22", color=GREY, fontsize=7.5, pad=4)
 
     # ── Panneau droit ───────────────────────────────────
     ax_i.axis("off")
@@ -3769,7 +3769,7 @@ def fmt_pro(s, news, sl_label):
         "📰 News : {}  ·  Spread : {}".format(news_lbl, sp_s),
         sep,
         "⚠️ Analyse technique uniquement — pas un conseil financier",
-        "🤖 <b>AlphaBot PRO v17</b>  ·  @leaderodg_bot",
+        "🤖 <b>AlphaBot PRO v22</b>  ·  @leaderodg_bot",
     ]
     return "\n".join(l for l in lines if l is not None)
 
@@ -3831,7 +3831,7 @@ def fmt_free(s, news, sl_label):
         "",
         sep,
         "⚠️ Analyse technique uniquement — pas un conseil financier",
-        "🤖 <b>AlphaBot PRO v11</b>  ·  @leaderodg_bot",
+        "🤖 <b>AlphaBot PRO v22</b>  ·  @leaderodg_bot",
     ]
     return "\n".join(l for l in lines if l is not None)
 
@@ -4010,7 +4010,7 @@ def fmt_daily(st, is_pro=True):
     if is_pro:
         # ── VERSION PRO : rapport complet ──────────────
         lines = [
-            f"📯 <b>RAPPORT DU JOUR — AlphaBot PRO v10</b> {perf}",
+            f"📯 <b>RAPPORT DU JOUR — AlphaBot PRO v22</b> {perf}",
             sep,
             f"📅 {st['date']}",
             f"📡 <b>{st['n']}</b> signaux analysés  ·  M1+M15+H1",
@@ -4046,12 +4046,12 @@ def fmt_daily(st, is_pro=True):
             "",
             sep,
             "⚠️ Estimations basées sur TP/SL détectés. Not financial advice.",
-            "🤖 AlphaBot PRO v10  ·  @leaderodg_bot",
+            "🤖 AlphaBot PRO v22  ·  @leaderodg_bot",
         ]
     else:
         # ── VERSION FREE : résumé + motivation ─────────
         lines = [
-            f"📊 <b>RÉSULTATS DU JOUR — AlphaBot PRO v10</b> {perf}",
+            f"📊 <b>RÉSULTATS DU JOUR — AlphaBot PRO v22</b> {perf}",
             sep,
             f"📅 {st['date']}  ·  <b>{st['n']}</b> signaux envoyés",
             "",
@@ -4067,7 +4067,7 @@ def fmt_daily(st, is_pro=True):
             f"💎 <b>Passe PRO — {PRO_PRICE}$ USDT</b> et ne rate plus rien.",
             "👉 @leaderodg_bot  →  /pay",
             sep,
-            "🤖 AlphaBot PRO v10  ·  @leaderodg_bot",
+            "🤖 AlphaBot PRO v22  ·  @leaderodg_bot",
         ]
     return "\n".join(l for l in lines if l is not None)
 
@@ -4177,16 +4177,16 @@ def _scan_inner():
     # ── Kill Zone ICT — bloquer le scan si KZ active ─────────────────────
     sq = get_session_quality()
     if not sq["allowed"] and not wknd:
-        log("INFO", clr("⛔ Kill Zone {} — scan suspendu".format(sn), "yellow")); return
+        log("INFO", clr("⛔ Kill Zone {} — scan suspendu".format(sn), "y")); return
 
     # ── Filtre news HIGH ──────────────────────────────────────────────────
     news_status, news_title, _news_adj = news_filter()
     if news_status == "BLOCK":
         log("INFO", clr("📰 NEWS BLOCK : {} — scan suspendu".format(
-            (news_title or "")[:40]), "yellow")); return
+            (news_title or "")[:40]), "y")); return
     if news_status == "CAUTION":
         sm = min(sm + 5, 95)
-        log("INFO", clr("📰 NEWS CAUTION — score min → {}".format(sm), "yellow"))
+        log("INFO", clr("📰 NEWS CAUTION — score min → {}".format(sm), "y"))
 
     q = Queue(); threads = []
     for m in active:
@@ -4230,13 +4230,13 @@ def _scan_inner():
         # ── Blocage signaux après 22h00 UTC ─────────────────────────
         now_check = datetime.now(timezone.utc).replace(tzinfo=None)
         if now_check.hour >= SIGNAL_CUTOFF_HOUR:
-            log("INFO", clr("Signal {} bloqué — après 22h00 UTC".format(sig["name"]), "yellow"))
+            log("INFO", clr("Signal {} bloqué — après 22h00 UTC".format(sig["name"]), "y"))
             continue
 
         # ── Throttle global : max 3/h, max 6/j, gap 15min ──────────
         ok_send, reason_throttle = _throttle_allowed(now_check)
         if not ok_send:
-            log("INFO", clr("Signal {} ignoré — {}".format(sig["name"], reason_throttle), "yellow"))
+            log("INFO", clr("Signal {} ignoré — {}".format(sig["name"], reason_throttle), "y"))
             continue
 
         sc  = sig.get("score", 0)
@@ -4386,7 +4386,7 @@ def broadcast_new_version():
         try:
             ref_link = "https://t.me/{}?start={}".format(BOT_USER, fuid)
             msg = (
-                "🚀 <b>AlphaBot PRO v17 — MISE À JOUR IMPORTANTE !</b>\n"
+                "🚀 <b>AlphaBot PRO v22 — MISE À JOUR IMPORTANTE !</b>\n"
                 "═"*22+"\n\n"
                 "⚡ <b>Nouveau système de signaux plus précis</b>\n\n"
                 "🎯 <b>Comment ça marche désormais :</b>\n"
@@ -4593,7 +4593,7 @@ def send_welcome(uid, uname):
     plan = get_plan(uid)
     tg_sticker(uid, STK_W)
     tg_send(uid,
-        "🤖 <b>AlphaBot PRO v17 — Agent IA Adaptatif</b>\n"+"═"*22+"\n\n"
+        "🤖 <b>AlphaBot PRO v22 — Agent IA Adaptatif</b>\n"+"═"*22+"\n\n"
         "📡 20 marchés : Forex · Or · BTC · Indices · Pétrole\n"
         "🧠 ICT/SMC · Tendance H1 · Entrée M5/M15\n"
         "🌍 Régime: <b>{}</b>  ·  Challenge: <b>{:.4f}$</b>\n\n"
@@ -4694,7 +4694,7 @@ def send_admin_full(uid):
 
 def send_guide(uid):
     tg_send(uid,
-        "📖 <b>GUIDE AlphaBot PRO v10</b>\n"+"═"*22+"\n\n"
+        "📖 <b>GUIDE AlphaBot PRO v22</b>\n"+"═"*22+"\n\n"
         "🧠 <b>STRATÉGIE ICT/SMC AVANCÉE (MULTI-TF)</b>\n\n"
         "1️⃣ <b>H1 Bias (BOS / CHoCH)</b>\n"
         "→ Tendance principale Smart Money\n\n"
@@ -4794,7 +4794,7 @@ def _auto_verify_and_activate(uid, uname, tx_hash):
             log("PAY", clr("AUTO PRO: @{} {} — {}$".format(uname, uid, amount), "green"))
             return
         elif i < len(delays) - 1:
-            log("INFO", clr("TX non confirmé (tentative {}/3)".format(i + 1), "yellow"))
+            log("INFO", clr("TX non confirmé (tentative {}/3)".format(i + 1), "y"))
     # Toutes tentatives échouées → activation manuelle
     tg_send(uid,
         "\u23f3 <b>Vérification en cours côté admin</b>\n\n"
@@ -4867,7 +4867,7 @@ def _check_open_signals():
                         _notify_result(pair, side, entry, tp, sl, "SL", current)
             except: continue
     except Exception as e:
-        log("WARN", clr("Suivi signal échoué: {}".format(e), "yellow"))
+        log("WARN", clr("Suivi signal échoué: {}".format(e), "y"))
 
 
 def _do_backup():
@@ -4886,7 +4886,7 @@ def _do_backup():
                 datetime.now().strftime("%d/%m/%Y %H:%M")))
         log("INFO", clr("Backup DB envoyé à l'admin.", "green"))
     except Exception as e:
-        log("WARN", clr("Backup échoué: {}".format(e), "yellow"))
+        log("WARN", clr("Backup échoué: {}".format(e), "y"))
 
 
 def _fmt_daily_report(stats):
@@ -5157,7 +5157,7 @@ def _relance_inactifs():
             except: pass
         log("INFO", clr("Relance envoyée à {} inactifs.".format(len(inactifs[:20])), "dim"))
     except Exception as e:
-        log("WARN", clr("Relance échouée: {}".format(e), "yellow"))
+        log("WARN", clr("Relance échouée: {}".format(e), "y"))
 
 
 def _scan_and_send_inner():
@@ -5174,7 +5174,7 @@ def _scan_and_send_inner():
 
     # ── Kill Zone Check — bloquer le scan si KZ active ──────────────────
     if not sq["allowed"] and not wknd:
-        log("INFO", clr("⛔ Kill Zone active : {} — scan suspendu".format(sl), "yellow"))
+        log("INFO", clr("⛔ Kill Zone active : {} — scan suspendu".format(sl), "y"))
         return  # Pas de signal pendant les Kill Zones
 
     # Score minimum adaptatif (session + régime marché + qualité setup)
@@ -5187,16 +5187,16 @@ def _scan_and_send_inner():
     news_status, news_title, news_adj = news_filter()
     if news_status == "BLOCK":
         log("INFO", clr("📰 NEWS BLOCK : {} — scan suspendu".format(
-            (news_title or "")[:40]), "yellow"))
+            (news_title or "")[:40]), "y"))
         return  # Pas de signal pendant une news HIGH
     if news_status == "CAUTION":
         log("INFO", clr("📰 NEWS CAUTION : {} — score min +5".format(
-            (news_title or "")[:30]), "yellow"))
+            (news_title or "")[:30]), "y"))
         sm = min(sm + 5, 95)  # Score min augmenté si news prochaine
 
     active_markets = [m for m in MARKETS if not wknd or m.get("crypto", False)]
     if wknd:
-        log("INFO", clr("Week-end : {} marchés crypto".format(len(active_markets)), "yellow"))
+        log("INFO", clr("Week-end : {} marchés crypto".format(len(active_markets)), "y"))
 
     result_queue = Queue()
     threads = []
@@ -5281,13 +5281,13 @@ def _scan_and_send_inner():
         # ── Blocage signaux après 22h00 UTC ─────────────────────────
         now_check = datetime.now(timezone.utc).replace(tzinfo=None)
         if now_check.hour >= SIGNAL_CUTOFF_HOUR:
-            log("INFO", clr("Signal {} bloqué — après 22h00 UTC".format(sig["name"]), "yellow"))
+            log("INFO", clr("Signal {} bloqué — après 22h00 UTC".format(sig["name"]), "y"))
             continue
 
         # ── Throttle global : max 1/h, max 10/j, gap 30min ──────────
         ok_send, reason_throttle = _throttle_allowed(now_check)
         if not ok_send:
-            log("INFO", clr("Signal {} ignoré — {}".format(sig["name"], reason_throttle), "yellow"))
+            log("INFO", clr("Signal {} ignoré — {}".format(sig["name"], reason_throttle), "y"))
             continue
 
         # ── Format signal : AMD VIP si phase détectée ──────────────
@@ -5402,7 +5402,7 @@ def _scan_and_send_inner():
                 "/ref \u2192 {} filleuls = {} mois gratuit".format(PRO_PROMO, REF_TARGET, REF_MONTHS))
         tg_send(ADMIN_ID, "\u23f0 PRO expiré: @{} <code>{}</code>".format(uname or "?", uid))
     if expired:
-        log("WARN", clr("{} PRO expiré(s) → FREE".format(len(expired)), "yellow"))
+        log("WARN", clr("{} PRO expiré(s) → FREE".format(len(expired)), "y"))
 
     # ── Backup quotidien à DAILY_HOUR ─────────────────────────
     if int(hour_str) == DAILY_HOUR and date_str != getattr(_scan_and_send_inner, "_last_backup", ""):
@@ -6651,7 +6651,7 @@ def handle_txhash(uid, uname, tx_hash):
             log("PAY", clr("AUTO PRO: @{} {} — {}$".format(uname, uid, amount), "green"))
             return
         elif i < len(delays) - 1:
-            log("INFO", clr("TX non confirmé (tentative {}/3)".format(i + 1), "yellow"))
+            log("INFO", clr("TX non confirmé (tentative {}/3)".format(i + 1), "y"))
     tg_send(uid,
         "\u23f3 <b>Vérification en attente</b>\n\n"
         "La transaction n'est pas encore confirmée.\n"
@@ -6766,8 +6766,8 @@ def make_webhook_handler(scan_state):
 
 
 def print_banner():
-    c = C["cyan"]; b = C["bold"]; r = C["reset"]
-    d = C["dim"];  g = C["green"]; y = C["yellow"]
+    c = C.get("cyan", C["c"]); b = C.get("bold", C["b"]); r = C["r"]
+    d = C["d"]; g = C["g"]; y = C["y"]
     print()
     print(b+c+"  ╔══════════════════════════════════════════════════╗"+r)
     print(b+c+"  ║   "+b+"██████ "+y+"ALPHABOT"+c+"  "+g+"v14"+c+"  ICT · SMC · M5+H1   ║"+r)
@@ -6891,7 +6891,7 @@ def send_admin_panel(uid):
     free   = total - pro
     tg_send_sticker(uid, STK_CROWN)
     tg_send(uid,
-        "🛡 <b>PANEL ADMIN — AlphaBot v10</b>\n" + "═" * 22 + "\n\n"
+        "🛡 <b>PANEL ADMIN — AlphaBot PRO v22</b>\n" + "═" * 22 + "\n\n"
         "👥 Membres : <b>{}</b>  ·  PRO : <b>{}</b>  ·  FREE : <b>{}</b>\n"
         "📡 Signaux aujourd'hui : <b>{}</b>  ·  Gains : <b>+${}</b>\n"
         "💰 Paiements confirmés : <b>{}</b>\n"
@@ -7101,7 +7101,7 @@ def send_welcome(uid, uname, ref_by=0):
                  else "🔓 FREE → /pay")
     wknd_note = "\n🌍 <b>Week-end : crypto uniquement !</b>" if wknd else ""
     tg_send(uid,
-        "🤖 <b>AlphaBot PRO v10 — Bienvenue {} !</b>\n".format("@"+uname if uname else "Trader") +
+        "🤖 <b>AlphaBot PRO v22 — Bienvenue {} !</b>\n".format("@"+uname if uname else "Trader") +
         "═"*22 + "\n\n"
         "🆔 <b>ID :</b> <code>{}</code>\n"
         "📌 <b>Plan :</b> {}\n"
@@ -7470,7 +7470,7 @@ PROMO_MSGS = [
         "✅ Rapport de performance chaque soir\n"
         "✅ Résultats TP/SL transparents\n\n"
         "Merci pour votre confiance. 🙏\n\n"
-        "<i>— @leaderOdg · AlphaBot PRO v10</i>"
+        "<i>— @leaderOdg · AlphaBot PRO v22</i>"
      )},
     {"id":"promo_1","label":"📊 Réveil doux",
      "text":(
@@ -8626,7 +8626,7 @@ color:#fff;font-size:14px;cursor:pointer;font-weight:700}
 # ══════════════════════════════════════════════════════
 def startup():
     print("\n"+clr("  ╔══════════════════════════════════════════════════╗","b","c"))
-    print(clr("  ║  AlphaBot PRO v10 — IA Adaptative · ICT/SMC  ║","b","c"))
+    print(clr("  ║  AlphaBot PRO v22 — IA Adaptative · ICT/SMC  ║","b","c"))
     print(clr("  ║  Forex·Métaux·Crypto·Indices · ICT/SMC · ⚡Mode   ║","b","c"))
     print(clr("  ╚══════════════════════════════════════════════════╝","b","c")+"\n")
     db_init()
@@ -8639,7 +8639,7 @@ def startup():
     def _notify():
         try:
             tg_send(ADMIN_ID,
-                "🤖 <b>AlphaBot PRO v10 — DÉMARRÉ !</b>\n\n"
+                "🤖 <b>AlphaBot PRO v22 — DÉMARRÉ !</b>\n\n"
                 "⚡  actif\n"
                 "🕐 {}  🎯 Score min : <b>{}</b>\n"
                 "{}\n"
@@ -8757,7 +8757,7 @@ def main():
             sm_real = get_adaptive_score_min()
             ch = chal_get()
             tg_send(ADMIN_ID,
-                "🤖 <b>AlphaBot PRO v21 — EN LIGNE !</b>\n"
+                "🤖 <b>AlphaBot PRO v22 — EN LIGNE !</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
                 "✅ DB initialisée  ·  Port {} ouvert\n"
                 "✅ Webhook configuré  ·  Scan : <b>5 min</b>\n\n"
