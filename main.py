@@ -2337,8 +2337,8 @@ else:
     def db_all(*a, **k): return []
     def db_run(*a, **k): return None
     def db_init(): pass
-    def db_register(uid, uname=None): pass
-    def db_pro(uid, days=30): pass
+    def db_register(uid, uname=None, ref_by=None, tg_fn=None): pass
+    def db_pro(uid, source=None, days=30): pass        # uid, source, days
     def db_free(uid): pass
     def is_pro(uid): return False
     def get_plan(uid): return "FREE"
@@ -2352,33 +2352,33 @@ else:
     def count_incr(uid): pass
     def db_count_increment(uid): pass
     def check_expiry(): pass
-    def save_signal(s, sn): pass
+    def save_signal(s, sn=None): pass
     def open_signals(): return []
-    def close_track(sid, result, pnl): pass
-    def daily_stats(): return {}
-    def weekly_stats(): return {}
+    def close_track(sid, result=None, pnl=0): pass
+    def daily_stats(uid=None): return {"n":0,"wins":0,"losses":0,"g1":0,"open":0}
+    def weekly_stats(uid=None): return {"n":0,"wins":0,"losses":0,"g1":0}
     def global_stats(): return (0,0,0,0,0)
     def rep_sent(uid, t): return False
     def mark_rep(uid, t): pass
-    def save_pay(uid, ref, plan, amt): pass
+    def save_pay(uid, ref=None, plan=None, amt=0): pass
     def pending_pays(): return []
-    def db_save_payment(*a): pass
+    def db_save_payment(*a, **k): pass
     def db_pending_payments(): return []
-    def chal_get(): return {"balance": 10000.0, "trades": 0, "wins": 0, "losses": 0}
+    def chal_get(): return {"balance":10000.0,"trades":0,"wins":0,"losses":0,"open":0,"g1":0,"peak":10000.0}
     def chal_save(d): pass
     def mem_query(*a, **k): return []
     def mem_record(*a, **k): pass
-    def best_setups(*a): return []
-    def worst_setups(*a): return []
+    def best_setups(*a, **k): return []
+    def worst_setups(*a, **k): return []
     def db_get_pro_info(uid): return {}
     def db_get_refs(uid): return []
     def db_global_stats(): return (0,0,0,0,0)
-    def db_daily_stats(): return {}
-    def db_weekly_stats(): return {}
+    def db_daily_stats(uid=None): return {"n":0,"wins":0,"losses":0,"g1":0,"open":0}
+    def db_weekly_stats(uid=None): return {"n":0,"wins":0,"losses":0,"g1":0}
     def db_get_pro_users(): return []
     def db_get_free_users(): return []
     def db_downgrade_pro(uid): pass
-    def db_activate_pro(uid, days=30): pass
+    def db_activate_pro(uid, source=None, days=30): pass
     def db_find_by_username(uname): return None
     def db_count_today(uid): return 0
     def db_get_inactive_users(days=7): return []
